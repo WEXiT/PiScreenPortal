@@ -1,4 +1,7 @@
-<img src="https://i.imgur.com/s6IRKzX.png](https://i.imgur.com/T0MNzem.png" width="500">
+<p align="center">
+  <img src="https://i.imgur.com/T0MNzem.png" width="400">
+</p>
+
 # PiScreenPortal
 
 > Web-based multi-monitor kiosk controller with AirPlay presentation mode for Raspberry Pi.
