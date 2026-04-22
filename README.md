@@ -37,11 +37,12 @@ PiScreenPortal turns a Raspberry Pi into a configurable digital signage and meet
 Installation
 Automatic (via GitHub)
 
+```bash
 git clone https://github.com/WEXiT/PiScreenPortal.git ~/PiScreenPortal && \
 cd ~/PiScreenPortal && \
 chmod +x install.sh && \
 ./install.sh
-#######
+```
 
 Manual (Step by Step)
 1. Prepare the Raspberry Pi
