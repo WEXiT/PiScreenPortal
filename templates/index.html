@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>PiScreenPortal</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="header-inner">
+    <div class="header-top">
+      <div class="brand">
+        <h1>PiScreenPortal</h1>
+        <span class="subtitle">Dennis Reuther</span>
+      </div>
+      <div class="lang-switch">
+        <label for="lang-select" class="muted" data-i18n="header.language">Language</label>
+        <select id="lang-select">
+          <option value="en">English</option>
+          <option value="de">Deutsch</option>
+        </select>
+      </div>
+    </div>
+    <nav class="tabs">
+      <button class="tab active" data-tab="dashboard" data-i18n="tabs.dashboard">Dashboard</button>
+      <button class="tab" data-tab="screens" data-i18n="tabs.screens">Screens</button>
+      <button class="tab" data-tab="presentation" data-i18n="tabs.presentation">Presentation</button>
+      <button class="tab" data-tab="wifi" data-i18n="tabs.wifi">Wi-Fi</button>
+      <button class="tab" data-tab="system" data-i18n="tabs.system">System</button>
+      <button class="tab" data-tab="settings" data-i18n="tabs.settings">Settings</button>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <!-- DASHBOARD -->
+  <section class="tab-content active" id="tab-dashboard">
+    <div class="card">
+      <h2 data-i18n="dash.quick">Quick actions</h2>
+      <div class="btn-row">
+        <button data-act="start" class="btn primary" data-i18n="dash.start">Start kiosk</button>
+        <button data-act="restart" class="btn" data-i18n="dash.restart">Restart</button>
+        <button data-act="stop" class="btn warn" data-i18n="dash.stop">Stop</button>
+        <button data-act="reload" class="btn" data-i18n="dash.reload">Reload page</button>
+        <button data-act="screen-off" class="btn" data-i18n="dash.screen_off">Monitor off</button>
+        <button data-act="screen-on" class="btn" data-i18n="dash.screen_on">Monitor on</button>
+      </div>
+      <div class="btn-row" style="margin-top:12px">
+        <button data-act="reboot" class="btn danger" data-i18n="dash.reboot">Reboot Raspberry</button>
+        <button data-act="shutdown" class="btn danger" data-i18n="dash.shutdown">Shutdown Raspberry</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 data-i18n="dash.overview">Overview</h2>
+      <div id="sysinfo" class="sysinfo" data-i18n="common.loading">Loading...</div>
+    </div>
+
+    <div class="card">
+      <h2 data-i18n="dash.screen_status">Screen status</h2>
+      <div id="screen-status" class="sysinfo" data-i18n="common.loading">Loading...</div>
+    </div>
+  </section>
+
+  <!-- SCREENS -->
+  <section class="tab-content" id="tab-screens">
+    <div class="card">
+      <h2 data-i18n="screens.detected">Detected monitors</h2>
+      <div class="table-wrap">
+        <table id="monitors">
+          <thead><tr>
+            <th data-i18n="screens.col_name">Name</th>
+            <th data-i18n="screens.col_primary">Primary</th>
+            <th data-i18n="screens.col_resolution">Resolution</th>
+            <th data-i18n="screens.col_position">Position</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="muted" data-i18n="screens.sorted">Sorted by X position from left to right.</p>
+    </div>
+
+    <div class="card">
+      <div class="flex-between">
+        <h2 data-i18n="screens.config">Screen configuration</h2>
+        <button id="add-screen" class="btn" data-i18n="screens.add">Add screen</button>
+      </div>
+      <div id="screens"></div>
+    </div>
+  </section>
+
+  <!-- PRESENTATION -->
+  <section class="tab-content" id="tab-presentation">
+    <div class="card">
+      <h2 data-i18n="pres.title">Presentation mode (AirPlay)</h2>
+      <p class="muted" data-i18n="pres.desc">Share your iPhone, iPad or Mac screen to the Raspberry via AirPlay. The kiosk is paused during presentation.</p>
+
+      <div id="pres-status-box" class="sysinfo" style="margin:14px 0"></div>
+
+      <div class="btn-row">
+        <button id="pres-start" class="btn primary" data-i18n="pres.start">Start presentation</button>
+        <button id="pres-stop" class="btn warn" data-i18n="pres.stop">Stop presentation</button>
+      </div>
+      <p id="pres-msg" class="muted"></p>
+    </div>
+
+    <div class="card">
+      <h2 data-i18n="pres.howto">How to connect</h2>
+      <ol>
+        <li data-i18n-html="pres.howto_ios"><b>iPhone / iPad:</b> open Control Center, tap <i>Screen Mirroring</i>, choose <code id="pres-name-hint">PiScreenPortal</code>.</li>
+        <li data-i18n-html="pres.howto_mac"><b>Mac:</b> Control Center &rarr; Screen Mirroring &rarr; <code>PiScreenPortal</code>.</li>
+        <li data-i18n-html="pres.howto_win"><b>Windows / Android:</b> AirPlay is not natively supported. Recommended: <a href="https://www.deskreen.com" target="_blank">Deskreen</a> or AirMyPC.</li>
+      </ol>
+    </div>
+
+    <div class="card">
+      <h2 data-i18n="pres.settings">Settings</h2>
+      <label data-i18n="pres.name_label">AirPlay name (how the Pi appears in the device list)
+        <input type="text" id="pres-name" placeholder="PiScreenPortal">
+      </label>
+      <label data-i18n="pres.resolution">Resolution
+        <select id="pres-resolution">
+          <option>1920x1080</option>
+          <option>1280x720</option>
+          <option>3840x2160</option>
+          <option>2560x1440</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" id="pres-stop-kiosk"> <span data-i18n="pres.pause_kiosk">Pause kiosk while presenting (recommended)</span></label>
+    </div>
+  </section>
+
+  <!-- WIFI -->
+  <section class="tab-content" id="tab-wifi">
+    <div class="card">
+      <h2 data-i18n="wifi.current">Current connection</h2>
+      <div id="wifi-current" class="wifi-current" data-i18n="common.loading">Loading...</div>
+      <div class="btn-row">
+        <button id="wifi-rescan" class="btn" data-i18n="wifi.rescan">Rescan networks</button>
+        <button id="wifi-reset" class="btn warn" data-i18n="wifi.reset">Restart Wi-Fi</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 data-i18n="wifi.add_title">Add Wi-Fi manually</h2>
+      <p class="muted" data-i18n="wifi.add_desc">For hidden networks or networks currently out of range. The profile is saved and will auto-connect when in range.</p>
+      <label>SSID <input type="text" id="wifi-add-ssid" placeholder="MyWiFi"></label>
+      <label data-i18n="wifi.password">Password <input type="password" id="wifi-add-password" placeholder=""></label>
+      <label class="check"><input type="checkbox" id="wifi-add-hidden"> <span data-i18n="wifi.hidden">SSID is hidden</span></label>
+      <label class="check"><input type="checkbox" id="wifi-add-autoconnect" checked> <span data-i18n="wifi.autoconnect">Auto-connect at boot</span></label>
+      <div class="btn-row">
+        <button id="wifi-add-btn" class="btn primary" data-i18n="wifi.save">Save Wi-Fi</button>
+      </div>
+      <p id="wifi-add-msg" class="muted"></p>
+    </div>
+
+    <div class="card">
+      <h2 data-i18n="wifi.saved">Saved Wi-Fi profiles</h2>
+      <div id="wifi-saved" class="wifi-list" data-i18n="common.loading">Loading...</div>
+    </div>
+
+    <div class="card">
+      <h2 data-i18n="wifi.available">Available networks</h2>
+      <div id="wifi-list" class="wifi-list" data-i18n="common.scanning">Scanning...</div>
+    </div>
+  </section>
+
+  <!-- SYSTEM -->
+  <section class="tab-content" id="tab-system">
+    <div class="card">
+      <h2 data-i18n="system.info">System information</h2>
+      <div id="sysinfo-full" class="sysinfo" data-i18n="common.loading">Loading...</div>
+    </div>
+    <div class="card">
+      <h2>Log</h2>
+      <pre id="log" data-i18n="common.loading">Loading...</pre>
+    </div>
+    <div class="card">
+      <h2 data-i18n="system.processes">Running processes</h2>
+      <pre id="status" data-i18n="common.loading">Loading...</pre>
+    </div>
+  </section>
+
+  <!-- SETTINGS -->
+  <section class="tab-content" id="tab-settings">
+    <div class="card">
+      <h2 data-i18n="settings.general">General</h2>
+      <label class="check"><input type="checkbox" id="auto_start"> <span data-i18n="settings.autostart">Start automatically at boot</span></label>
+      <label class="check"><input type="checkbox" id="restart_on_crash"> <span data-i18n="settings.crash_restart">Restart Chromium on crash</span></label>
+      <label>Port <small class="muted" data-i18n="settings.port_note">(service restart required)</small>
+        <input type="number" id="port" min="1" max="65535">
+      </label>
+      <label data-i18n="settings.flags">Chromium flags <small class="muted" data-i18n="settings.flags_note">(one per line)</small>
+        <textarea id="chromium_flags" rows="6"></textarea>
+      </label>
+    </div>
+
+    <div class="card">
+      <h2 data-i18n="settings.auth">Access protection</h2>
+      <label class="check"><input type="checkbox" id="auth_enabled"> <span data-i18n="settings.auth_enable">Protect web interface with password</span></label>
+      <label data-i18n="settings.username">Username <input type="text" id="auth_username"></label>
+      <label data-i18n="settings.password">Password <input type="text" id="auth_password"></label>
+      <p class="muted" data-i18n="settings.auth_note">Simple HTTP basic auth. Password stored in plain text &ndash; do not reuse an important one.</p>
+    </div>
+
+    <div class="card">
+      <h2 data-i18n="settings.backup">Backup configuration</h2>
+      <div class="btn-row">
+        <a href="/api/config/export" class="btn" data-i18n="settings.export">Export config</a>
+      </div>
+      <label style="margin-top:12px" data-i18n="settings.import">Import config (JSON file)
+        <input type="file" id="import-file" accept="application/json">
+      </label>
+    </div>
+  </section>
+</main>
+
+<div class="save-bar">
+  <button id="save" class="btn primary" data-i18n="common.save">Save and apply</button>
+  <span id="msg"></span>
+</div>
+
+<!-- Wi-Fi password modal -->
+<div class="modal" id="wifi-modal" hidden>
+  <div class="modal-inner">
+    <h3 data-i18n="wifi.connect_to">Connect to Wi-Fi</h3>
+    <p id="wifi-modal-ssid"></p>
+    <label data-i18n="wifi.password">Password <input type="password" id="wifi-password" autocomplete="off"></label>
+    <div class="btn-row">
+      <button id="wifi-cancel" class="btn" data-i18n="common.cancel">Cancel</button>
+      <button id="wifi-connect" class="btn primary" data-i18n="wifi.connect">Connect</button>
+    </div>
+    <p id="wifi-modal-msg" class="muted"></p>
+  </div>
+</div>
+
+<footer>
+  <span>&copy; Dennis Reuther 2026</span>
+</footer>
+
+<script src="/static/i18n.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

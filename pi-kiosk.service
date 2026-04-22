@@ -1,0 +1,19 @@
+[Unit]
+Description=PiScreenPortal Web Controller
+After=graphical.target network-online.target
+Wants=graphical.target network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/__USER__/.Xauthority
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=__DIR__
+ExecStart=__DIR__/venv/bin/python __DIR__/app.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=graphical.target
