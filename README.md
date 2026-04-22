@@ -210,6 +210,9 @@ rasp/
     └── index.html
 ```
 
+## TAGS
+raspberry-pi flask stream pi kiosk raspberry airplay multi-monitor digital-signage kiosk-mode web-dashboard chromium-kiosk piscreenportal pi-kiosk
+
 ## License
 
 MIT © Dennis Reuther 2026
