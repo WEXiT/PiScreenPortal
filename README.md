@@ -26,6 +26,13 @@ PiScreenPortal turns a Raspberry Pi into a configurable digital signage and meet
 - **Password protection** (HTTP Basic Auth) for the web interface
 - **Import / export configuration** as JSON
 
+
+## Screenshots
+<p align="center">
+  <img src="https://i.imgur.com/2EQvU4x.png" width="45%" />
+  <img src="https://i.imgur.com/EXle3j2.png" width="45%" style="margin-left:10px;" />
+</p>
+
 ## Requirements
 
 - Raspberry Pi 4 or 5
