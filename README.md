@@ -38,10 +38,7 @@ Installation
 Automatic (via GitHub)
 
 ```bash
-git clone https://github.com/WEXiT/PiScreenPortal.git ~/PiScreenPortal && \
-cd ~/PiScreenPortal && \
-chmod +x install.sh && \
-./install.sh
+rm -rf ~/PiScreenPortal && git clone https://github.com/WEXiT/PiScreenPortal.git ~/PiScreenPortal && cd ~/PiScreenPortal && chmod +x install.sh && bash install.sh
 ```
 
 Manual (Step by Step)
