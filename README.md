@@ -1,3 +1,4 @@
+<img src="https://i.imgur.com/s6IRKzX.png" width="400">
 # PiScreenPortal
 
 > Web-based multi-monitor kiosk controller with AirPlay presentation mode for Raspberry Pi.
@@ -29,10 +30,18 @@ PiScreenPortal turns a Raspberry Pi into a configurable digital signage and meet
 - X11 session (Wayland is **not** supported – instructions below)
 - One or more HDMI monitors
 
----
 
-## 1. Prepare the Raspberry Pi
+Installation
+Automatic (via GitHub)
 
+git clone https://github.com/WEXiT/PiScreenPortal.git ~/PiScreenPortal && \
+cd ~/PiScreenPortal && \
+chmod +x install.sh && \
+./install.sh
+#######
+
+Manual (Step by Step)
+1. Prepare the Raspberry Pi
 Flash the SD card with the official **Raspberry Pi Imager**, choose *Raspberry Pi OS (64-bit) with desktop*. In the imager's *advanced settings*:
 
 - Hostname: `pi-kiosk` (or any name you like)
