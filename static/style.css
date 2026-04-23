@@ -27,6 +27,192 @@ html, body {
 
 body { padding-bottom: 90px; }
 
+/* ------ Login page ------ */
+body.login-body {
+  padding: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(1200px 600px at 10% -10%, #dbeafe 0%, transparent 60%),
+    radial-gradient(900px 500px at 100% 110%, #ede9fe 0%, transparent 55%),
+    var(--bg);
+}
+.login-wrap {
+  min-height: 100vh;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+}
+.login-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 12px 40px rgba(15,23,42,.08),
+              0 2px 8px rgba(15,23,42,.04);
+  padding: 32px 30px 26px;
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.login-brand {
+  text-align: center;
+  margin-bottom: 6px;
+}
+.login-logo {
+  max-width: 180px;
+  height: auto;
+  margin: 0 auto 8px;
+  display: block;
+}
+.login-sub {
+  margin: 4px 0 0;
+  font-size: 14px;
+}
+.login-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+}
+.login-card label span { letter-spacing: .02em; }
+.login-card input[type="text"],
+.login-card input[type="password"] {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 15px;
+  background: var(--bg);
+  color: var(--text);
+  transition: border-color .15s, box-shadow .15s;
+}
+.login-card input:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
+.btn-block {
+  width: 100%;
+  padding: 11px 16px;
+  font-size: 15px;
+  margin-top: 4px;
+}
+.login-error {
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 14px;
+}
+.login-foot {
+  text-align: center;
+  font-size: 12px;
+  margin: 8px 0 0;
+}
+
+/* ------ Header: logout button ------ */
+.header-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.header-user .btn-logout {
+  padding: 4px 12px;
+  font-size: 13px;
+}
+.header-user[hidden] { display: none; }
+
+/* ------ Services & tools ------ */
+.services-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+.svc {
+  display: grid;
+  grid-template-columns: 24px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.svc .svc-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--muted);
+  justify-self: center;
+}
+.svc.ok   .svc-dot { background: var(--success); box-shadow: 0 0 0 3px rgba(4,120,87,.15); }
+.svc.warn .svc-dot { background: var(--warn);    box-shadow: 0 0 0 3px rgba(180,83,9,.18); }
+.svc.bad  .svc-dot { background: var(--danger);  box-shadow: 0 0 0 3px rgba(185,28,28,.18); }
+.svc.idle .svc-dot { background: #94a3b8; }
+.svc-main { min-width: 0; }
+.svc-title {
+  font-weight: 500;
+  display: flex; align-items: center; gap: 8px;
+  flex-wrap: wrap;
+}
+.svc-label { color: var(--text); }
+.svc-target {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--muted);
+  font-size: 12px;
+}
+.svc-note, .svc-warn {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin: 2px 0 0;
+  line-height: 1.4;
+}
+.svc-warn { color: var(--warn); font-weight: 500; }
+.svc-state {
+  font-size: 12px;
+  font-weight: 500;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.svc.ok   .svc-state { color: var(--success); border-color: rgba(4,120,87,.35); background: rgba(4,120,87,.08); }
+.svc.warn .svc-state { color: var(--warn);    border-color: rgba(180,83,9,.35);  background: rgba(180,83,9,.08); }
+.svc.bad  .svc-state { color: var(--danger);  border-color: rgba(185,28,28,.35); background: rgba(185,28,28,.08); }
+
+.session-chip {
+  display: inline-block;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  border: 1px solid rgba(29,78,216,.25);
+  font-weight: 500;
+  margin-left: 6px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.session-chip.wayland { background:#fef3c7; color:#92400e; border-color:#fcd34d; }
+.session-chip.x11     { background:#dcfce7; color:#166534; border-color:#86efac; }
+
+/* ------ Power / 24/7 card ------ */
+/* das Gesamt-Badge sitzt im .flex-between Container auf Card-Ebene.
+   Um es je nach Gesamtstatus einzufaerben legen wir Hilfs-Klassen auf
+   das Parent (das flex-between div). Der Selektor matcht dann das
+   .svc-state-Element darin. */
+.power-ok    .svc-state { color: var(--success); border-color: rgba(4,120,87,.35); background: rgba(4,120,87,.08); }
+.power-warn  .svc-state { color: var(--warn);    border-color: rgba(180,83,9,.35); background: rgba(180,83,9,.08); }
+.power-idle  .svc-state { color: var(--muted); }
+#power-msg.error { color: var(--danger); }
+
 /* ------ Header ------ */
 header {
   background: var(--bg);

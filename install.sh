@@ -117,10 +117,19 @@ fi
 # --------------------------------------------------
 echo ">>> [6/7] Sudo-Rechte"
 SUDO_FILE="/etc/sudoers.d/pi-kiosk"
+# Hinweis: sudo folgt Symlinks bei der Pfadprüfung NICHT. Auf Bookworm+ liegen
+# reboot/shutdown unter /usr/sbin/, auf älteren Systemen unter /sbin/.
+# Wir listen beide Pfade explizit, damit die Quick Actions zuverlässig laufen.
 sudo tee "$SUDO_FILE" >/dev/null <<EOF
-$USER_NAME ALL=(ALL) NOPASSWD: /sbin/reboot, /sbin/shutdown, /usr/bin/nmcli
+$USER_NAME ALL=(ALL) NOPASSWD: /sbin/reboot, /usr/sbin/reboot, /sbin/shutdown, /usr/sbin/shutdown, /usr/bin/nmcli
 EOF
 sudo chmod 440 "$SUDO_FILE"
+# Syntax der sudoers-Datei pruefen, damit wir uns nicht selbst aussperren
+if ! sudo visudo -cf "$SUDO_FILE" >/dev/null; then
+    echo "!!! sudoers-Datei fehlerhaft, wird entfernt."
+    sudo rm -f "$SUDO_FILE"
+    exit 1
+fi
 
 # --------------------------------------------------
 # 7. systemd-Service
@@ -159,13 +168,16 @@ if [ ! -d "$DESKTOP_DIR" ]; then
     chown "$USER_NAME":"$USER_NAME" "$DESKTOP_DIR"
 fi
 DESKTOP_FILE="$DESKTOP_DIR/PiScreenPortal.desktop"
+# xdg-open nutzt automatisch den registrierten Default-Browser und
+# funktioniert darum unabhaengig davon, ob das Paket "chromium" oder
+# "chromium-browser" heisst.
 cat > "$DESKTOP_FILE" <<EOF
 [Desktop Entry]
 Version=1.0
 Type=Application
 Name=PiScreenPortal
 Comment=Webinterface der PiScreenPortal-Steuerung öffnen
-Exec=chromium --new-window http://localhost:2411
+Exec=xdg-open http://localhost:2411
 Icon=chromium
 Terminal=false
 Categories=Utility;
@@ -178,7 +190,28 @@ if command -v gio >/dev/null 2>&1; then
     sudo -u "$USER_NAME" gio set "$DESKTOP_FILE" metadata::trusted true 2>/dev/null || true
 fi
 
-# Bildschirmschoner im Desktop-Autostart deaktivieren (X11 LXDE)
+# --------------------------------------------------
+# 24/7-Kiosk-Modus: WLAN-Powersave und Screen-Blanking dauerhaft aus.
+# Sonst trennt der Pi im Idle den AP oder schaltet nach 10 min den
+# Bildschirm ab - beides toedlich fuer Dauerbetrieb.
+# --------------------------------------------------
+echo ">>> 24/7-Modus: WLAN-Powersave dauerhaft aus"
+NM_CONF_DIR="/etc/NetworkManager/conf.d"
+NM_CONF="$NM_CONF_DIR/99-pi-kiosk-powersave.conf"
+sudo mkdir -p "$NM_CONF_DIR"
+sudo tee "$NM_CONF" >/dev/null <<'EOF'
+# Deaktiviert WLAN-Powersaving fuer alle Verbindungen.
+# 2 = disable, 3 = enable (NM-Default ist 3 auf Bookworm+).
+# Von PiScreenPortal automatisch angelegt - nicht aendern wenn du im
+# 24/7-Betrieb kein zufaelliges Disconnect willst.
+[connection]
+wifi.powersave = 2
+EOF
+if systemctl is-active --quiet NetworkManager; then
+    sudo systemctl reload NetworkManager || sudo systemctl restart NetworkManager
+fi
+
+echo ">>> 24/7-Modus: Bildschirmschoner / DPMS dauerhaft aus (X11 LXDE autostart)"
 AUTOSTART_DIR="$USER_HOME/.config/lxsession/LXDE-pi"
 AUTOSTART="$AUTOSTART_DIR/autostart"
 if [ -d "$AUTOSTART_DIR" ] && [ -f "$AUTOSTART" ]; then
@@ -188,6 +221,22 @@ if [ -d "$AUTOSTART_DIR" ] && [ -f "$AUTOSTART" ]; then
         echo "@xset s noblank" | sudo -u "$USER_NAME" tee -a "$AUTOSTART" >/dev/null
     fi
 fi
+
+# Wayfire (Wayland unter Pi OS Bookworm+): Idle-Timeout auf 0
+WAYFIRE_INI="$USER_HOME/.config/wayfire.ini"
+if [ -f "$WAYFIRE_INI" ]; then
+    if ! grep -q "^\[idle\]" "$WAYFIRE_INI"; then
+        echo "" | sudo -u "$USER_NAME" tee -a "$WAYFIRE_INI" >/dev/null
+        echo "[idle]"                | sudo -u "$USER_NAME" tee -a "$WAYFIRE_INI" >/dev/null
+        echo "toggle = none"         | sudo -u "$USER_NAME" tee -a "$WAYFIRE_INI" >/dev/null
+        echo "screensaver_timeout = 0" | sudo -u "$USER_NAME" tee -a "$WAYFIRE_INI" >/dev/null
+        echo "dpms_timeout = 0"      | sudo -u "$USER_NAME" tee -a "$WAYFIRE_INI" >/dev/null
+    fi
+fi
+
+# labwc (Wayland auf Trixie+): kanshi / swayidle deaktivieren falls aktiv
+# Hinweis: labwc nutzt wlopm/swayidle-aehnliche Mechanik; auf Pi OS wird
+# defaultmaessig nichts gestartet, darum kein Eingriff noetig.
 
 # --------------------------------------------------
 # Fertig
@@ -217,7 +266,4 @@ echo "   http://$IP:$PORT"
 echo ""
 echo " Dienst-Status:  sudo systemctl status pi-kiosk"
 echo " Live-Log:       journalctl -u pi-kiosk -f"
-echo ""
-echo " WICHTIG: Wenn X11 noch nicht aktiv ist:"
-echo "   sudo raspi-config -> Advanced -> Wayland -> X11"
 echo ""

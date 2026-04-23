@@ -23,7 +23,7 @@ PiScreenPortal turns a Raspberry Pi into a configurable digital signage and meet
 - **System monitoring** – CPU temperature, load, RAM, disk, logs, running processes
 - **Auto-start on boot**, Chromium crash-recovery, configurable Chromium flags
 - **Bilingual UI** – English (default) and German, switchable in the header
-- **Password protection** (HTTP Basic Auth) for the web interface
+- **Password protection** with a proper login page and session cookie (stay signed in for 14 days)
 - **Import / export configuration** as JSON
 
 ## Demo
@@ -39,7 +39,6 @@ PiScreenPortal turns a Raspberry Pi into a configurable digital signage and meet
 
 - Raspberry Pi 4 or 5
 - Raspberry Pi OS 64-bit (Bookworm or Trixie), *with desktop*
-- X11 session (Wayland is **not** supported – instructions below)
 - One or more HDMI monitors
 
 
@@ -59,20 +58,7 @@ Flash the SD card with the official **Raspberry Pi Imager**, choose *Raspberry P
 - Configure Wi-Fi (SSID + password)
 - Username: `admin`, set a password
 
-Boot the Pi.
-
-On the Pi, run once:
-
-```bash
-sudo raspi-config
-```
-
-Set these two options (both are mandatory):
-
-1. **System Options → Boot / Auto Login → Desktop Autologin**
-2. **Advanced Options → Wayland → X11**
-
-Choose *Finish* → reboot.
+Boot the Pi – that's all the OS-level preparation required.
 
 ---
 
@@ -81,7 +67,7 @@ Choose *Finish* → reboot.
 ### macOS / Linux
 
 ```bash
-scp -r /path/to/rasp/ admin@<PI-IP>:~/
+scp -r /path/to/PiScreenPortal/ admin@<PI-IP>:~/
 ```
 
 ### Windows
@@ -90,12 +76,12 @@ scp -r /path/to/rasp/ admin@<PI-IP>:~/
 
 1. Install [WinSCP](https://winscp.net)
 2. New session → protocol **SCP**, host = Pi IP, user `admin`, password
-3. Drag the local `rasp` folder to the Pi's home directory
+3. Drag the local `PiScreenPortal` folder to the Pi's home directory
 
 **PowerShell:** Windows 10/11 ships with `scp`:
 
 ```powershell
-scp -r C:\path\to\rasp admin@<PI-IP>:~/
+scp -r C:\path\to\PiScreenPortal admin@<PI-IP>:~/
 ```
 
 ---
@@ -106,7 +92,7 @@ SSH into the Pi and run the installer:
 
 ```bash
 ssh admin@<PI-IP>
-cd ~/rasp
+cd ~/PiScreenPortal
 chmod +x install.sh
 ./install.sh
 ```
@@ -153,7 +139,7 @@ For Windows or Android (no native AirPlay) use [Deskreen](https://www.deskreen.c
 After changing project files on your machine, just re-upload and restart the service:
 
 ```bash
-scp -r /path/to/rasp/ admin@<PI-IP>:~/
+scp -r /path/to/PiScreenPortal/ admin@<PI-IP>:~/
 ssh admin@<PI-IP> "sudo systemctl restart pi-kiosk"
 ```
 
@@ -165,22 +151,22 @@ sudo systemctl restart pi-kiosk     # restart
 sudo systemctl stop pi-kiosk        # stop
 sudo systemctl disable pi-kiosk     # disable auto-start
 journalctl -u pi-kiosk -f           # live logs
-tail -f ~/rasp/kiosk.log            # application log
+tail -f ~/PiScreenPortal/kiosk.log  # application log
 ```
 
 ## Configuration file
 
-Stored at `~/rasp/config.json`. You can also export/import it via the *Settings* tab.
+Stored at `~/PiScreenPortal/config.json`. You can also export/import it via the *Settings* tab.
 
 ## Troubleshooting
 
 | Problem | Fix |
 |---|---|
 | Web interface not reachable | `sudo systemctl status pi-kiosk`; check `journalctl -u pi-kiosk -n 50` |
-| No monitors detected | Make sure X11 is active: `echo $XDG_SESSION_TYPE` should print `x11` |
+| No monitors detected | Check `xrandr --query` on the Pi. If it fails, the session isn't exposing outputs; reboot once and try again. |
 | Chromium on wrong monitor | In *Screens* tab, set the output explicitly (`HDMI-1`, `HDMI-2`) |
 | AirPlay device not visible | `systemctl status avahi-daemon` must be running; check firewall |
-| Lost password | Edit `~/rasp/config.json` → set `auth.enabled` to `false`, restart service |
+| Lost password | Edit `~/PiScreenPortal/config.json` → set `auth.enabled` to `false`, restart service |
 
 ## Uninstall
 
@@ -189,7 +175,7 @@ sudo systemctl disable --now pi-kiosk
 sudo rm /etc/systemd/system/pi-kiosk.service
 sudo rm /etc/sudoers.d/pi-kiosk
 sudo systemctl daemon-reload
-rm -rf ~/rasp ~/Desktop/PiScreenPortal.desktop
+rm -rf ~/PiScreenPortal ~/Desktop/PiScreenPortal.desktop
 ```
 
 ---
@@ -206,7 +192,7 @@ rm -rf ~/rasp ~/Desktop/PiScreenPortal.desktop
 ## Project structure
 
 ```
-rasp/
+PiScreenPortal/
 ├── app.py              # Flask backend + kiosk manager
 ├── requirements.txt
 ├── install.sh          # one-shot installer
@@ -216,7 +202,8 @@ rasp/
 │   ├── i18n.js         # translations (en, de)
 │   └── style.css
 └── templates/
-    └── index.html
+    ├── index.html
+    └── login.html
 ```
 
 ## TAGS

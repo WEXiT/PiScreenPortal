@@ -167,6 +167,122 @@
     if (path === "/api/status")   return json(buildStatus());
     if (path === "/api/logs")     return text(state.logLines.join("\n"));
 
+    // ----- Auth (demo has auth disabled, so everyone is "logged in")
+    if (path === "/api/auth/status") {
+      return json({
+        enabled: !!(state.cfg.auth && state.cfg.auth.enabled),
+        logged_in: true,
+        user: state.cfg.auth && state.cfg.auth.enabled
+               ? (state.cfg.auth.username || "admin")
+               : null,
+      });
+    }
+    // /login and /logout in the demo just acknowledge - there's no real session.
+    if (path === "/login" && method === "POST") {
+      return json({ ok: true });
+    }
+    if (path === "/logout") {
+      log("logout (demo: no-op)");
+      return json({ ok: true });
+    }
+
+    // ----- Power / 24/7 mode
+    if (!state.power) {
+      state.power = {
+        wifi_live: "on",              // WLAN-Powersave aktuell an (Szenario "frisch installiert")
+        wifi_persistent: false,       // noch keine NM-Config
+        ss_timeout: 600,              // Screensaver nach 10 min
+        dpms_enabled: true,           // DPMS aktiv
+      };
+    }
+    function buildPower() {
+      const p = state.power;
+      const wifi_ok = p.wifi_live === "off" && p.wifi_persistent;
+      const blanking_ok = p.ss_timeout === 0 && !p.dpms_enabled;
+      return {
+        overall: (wifi_ok && blanking_ok) ? "ok" : "warn",
+        session: "x11",
+        wifi_powersave: {
+          available: true, iface: "wlan0",
+          state: p.wifi_live,
+          persistent_disabled: p.wifi_persistent,
+          persistent_config_file: "/etc/NetworkManager/conf.d/99-pi-kiosk-powersave.conf",
+        },
+        screen_blanking: {
+          available: true,
+          screensaver_timeout: p.ss_timeout,
+          dpms_enabled: p.dpms_enabled,
+          dpms_reported: true,
+          blanking_off: blanking_ok,
+        },
+      };
+    }
+    if (path === "/api/power") {
+      return json(buildPower());
+    }
+    if (path === "/api/power/disable-all" && method === "POST") {
+      // Simuliere: alles abschalten, persistent machen
+      state.power.wifi_live = "off";
+      state.power.wifi_persistent = true;
+      state.power.ss_timeout = 0;
+      state.power.dpms_enabled = false;
+      log("24/7 mode applied (demo)");
+      return json({
+        ok: true,
+        steps: [
+          {step: "xset s off",        ok: true, msg: "OK"},
+          {step: "xset -dpms",        ok: true, msg: "OK"},
+          {step: "xset s noblank",    ok: true, msg: "OK"},
+          {step: "nmcli modify 'OfficeWiFi' wifi.powersave=2", ok: true, msg: "OK"},
+        ],
+        status: buildPower(),
+      });
+    }
+
+    // ----- Services & tools status (dashboard card)
+    if (path === "/api/services") {
+      return json({
+        session: "x11",
+        user: "admin",
+        display: ":0",
+        wayland_display: "",
+        items: [
+          { key: "chromium",  label: "Chromium",          target: "chromium",
+            kind: "kiosk",   type: "process", installed: true, running: true,
+            pids: [2134, 2136], note: "", warn: null },
+          { key: "unclutter", label: "unclutter",         target: "unclutter",
+            kind: "cursor",  type: "process", installed: true, running: true,
+            pids: [2140],
+            note: "Blendet den Mauszeiger aus (benötigt X11).", warn: null },
+          { key: "xdotool",   label: "xdotool",           target: "xdotool",
+            kind: "tool",    type: "binary",  installed: true, running: null,
+            note: "Wird für die Reload-Aktion benötigt.", warn: null },
+          { key: "xrandr",    label: "xrandr",            target: "xrandr",
+            kind: "tool",    type: "binary",  installed: true, running: null,
+            note: "Wird für die Monitor-Erkennung benötigt.", warn: null },
+          { key: "uxplay",    label: "UxPlay (AirPlay)",  target: "uxplay",
+            kind: "airplay", type: "process", installed: true,
+            running: state.presentation.running,
+            pids: state.presentation.running ? [3201] : [],
+            note: "Nur aktiv während eine Präsentation läuft.", warn: null },
+          { key: "nmcli",     label: "NetworkManager (nmcli)", target: "nmcli",
+            kind: "wifi",    type: "binary",  installed: true, running: null,
+            note: "Wird für die WLAN-Verwaltung benötigt.", warn: null },
+          { key: "avahi",     label: "avahi-daemon",      target: "avahi-daemon",
+            kind: "airplay", type: "systemd", installed: true, running: true,
+            enabled: true,
+            note: "mDNS-Dienst damit AirPlay-Geräte den Pi finden.", warn: null },
+          { key: "nm_service",label: "NetworkManager (systemd)",
+            target: "NetworkManager",
+            kind: "wifi",    type: "systemd", installed: true, running: true,
+            enabled: true,   note: "", warn: null },
+          { key: "pi_kiosk",  label: "pi-kiosk.service",  target: "pi-kiosk",
+            kind: "system",  type: "systemd", installed: true, running: true,
+            enabled: true,   note: "Eigener Autostart-Dienst.", warn: null },
+        ],
+      });
+    }
+
     // ----- Actions
     if (path.startsWith("/api/action/") && method === "POST") {
       const act = path.slice("/api/action/".length);
@@ -233,10 +349,12 @@
   }
 
   // --------- Install fetch interceptor ---------------------------------
+  // Match /api/*, /login, /logout - every path our frontend talks to.
+  const MOCK_PATHS = /\/(api\/|login\b|logout\b)/;
   const realFetch = window.fetch.bind(window);
   window.fetch = async function (input, init) {
     const url = typeof input === "string" ? input : (input && input.url) || "";
-    if (url.includes("/api/")) {
+    if (MOCK_PATHS.test(url)) {
       // Small artificial delay to feel "real"
       await new Promise(r => setTimeout(r, 80 + Math.random() * 120));
       const res = await handle(url, init || {});

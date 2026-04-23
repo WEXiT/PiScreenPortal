@@ -22,6 +22,14 @@
           <option value="en">English</option>
           <option value="de">Deutsch</option>
         </select>
+        <div class="header-user" id="header-user" hidden>
+          <span>
+            <span data-i18n="auth.signed_in_as">Signed in as</span>
+            <b id="header-user-name"></b>
+          </span>
+          <button class="btn btn-logout" id="btn-logout"
+                  data-i18n="auth.logout">Log out</button>
+        </div>
       </div>
     </div>
     <nav class="tabs">
@@ -62,6 +70,35 @@
     <div class="card">
       <h2 data-i18n="dash.screen_status">Screen status</h2>
       <div id="screen-status" class="sysinfo" data-i18n="common.loading">Loading...</div>
+    </div>
+
+    <div class="card">
+      <div class="flex-between">
+        <h2 data-i18n="dash.services">Services &amp; tools</h2>
+        <button id="services-refresh" class="btn"
+                data-i18n="common.refresh">Refresh</button>
+      </div>
+      <p class="muted" id="services-session" data-i18n="common.loading">Loading...</p>
+      <div id="services-list" class="services-list" data-i18n="common.loading">Loading...</div>
+    </div>
+
+    <div class="card" id="power-card">
+      <div class="flex-between">
+        <h2 data-i18n="power.title">Energy &amp; 24/7 mode</h2>
+        <span id="power-overall" class="svc-state" data-i18n="common.loading">Loading...</span>
+      </div>
+      <p class="muted" data-i18n="power.desc">
+        For reliable 24/7 kiosk operation, Wi-Fi power saving and screen
+        blanking must be off. Otherwise the Pi drops the AP after a few
+        minutes idle, or the screen turns black.
+      </p>
+      <div id="power-list" class="services-list" data-i18n="common.loading">Loading...</div>
+      <div class="btn-row" style="margin-top:14px">
+        <button id="power-refresh" class="btn" data-i18n="common.refresh">Refresh</button>
+        <button id="power-force" class="btn primary"
+                data-i18n="power.force">Force 24/7 mode now</button>
+      </div>
+      <p id="power-msg" class="muted" style="margin-top:8px"></p>
     </div>
   </section>
 

@@ -1,28 +1,12 @@
 <!doctype html>
-<html lang="en">
+<html lang="de">
 <head>
 <meta charset="utf-8">
-<title>PiScreenPortal – Live Demo</title>
+<title>PiScreenPortal</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="style.css">
-<style>
-  /* Demo banner */
-  .demo-banner{
-    background:linear-gradient(90deg,#ff9800,#ff5722);
-    color:#fff;text-align:center;padding:8px 14px;font-size:14px;
-    font-weight:600;letter-spacing:.3px;
-  }
-  .demo-banner a{color:#fff;text-decoration:underline}
-</style>
 </head>
 <body>
-
-<div class="demo-banner">
-  🚀 Interactive Demo &mdash; no real Raspberry Pi is controlled.
-  All actions are simulated locally in your browser.
-  <a href="https://github.com/" target="_blank" rel="noopener">View on GitHub</a>
-</div>
-
 <header>
   <div class="header-inner">
     <div class="header-top">
@@ -30,7 +14,7 @@
         <img src="logo.png" alt="PiScreenPortal" class="brand-logo"
              onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
         <h1 style="display:none">PiScreenPortal</h1>
-        <span class="subtitle">Dennis Reuther &middot; Demo</span>
+        <span class="subtitle">Dennis Reuther</span>
       </div>
       <div class="lang-switch">
         <label for="lang-select" class="muted" data-i18n="header.language">Language</label>
@@ -38,6 +22,14 @@
           <option value="en">English</option>
           <option value="de">Deutsch</option>
         </select>
+        <div class="header-user" id="header-user" hidden>
+          <span>
+            <span data-i18n="auth.signed_in_as">Signed in as</span>
+            <b id="header-user-name"></b>
+          </span>
+          <button class="btn btn-logout" id="btn-logout"
+                  data-i18n="auth.logout">Log out</button>
+        </div>
       </div>
     </div>
     <nav class="tabs">
@@ -78,6 +70,35 @@
     <div class="card">
       <h2 data-i18n="dash.screen_status">Screen status</h2>
       <div id="screen-status" class="sysinfo" data-i18n="common.loading">Loading...</div>
+    </div>
+
+    <div class="card">
+      <div class="flex-between">
+        <h2 data-i18n="dash.services">Services &amp; tools</h2>
+        <button id="services-refresh" class="btn"
+                data-i18n="common.refresh">Refresh</button>
+      </div>
+      <p class="muted" id="services-session" data-i18n="common.loading">Loading...</p>
+      <div id="services-list" class="services-list" data-i18n="common.loading">Loading...</div>
+    </div>
+
+    <div class="card" id="power-card">
+      <div class="flex-between">
+        <h2 data-i18n="power.title">Energy &amp; 24/7 mode</h2>
+        <span id="power-overall" class="svc-state" data-i18n="common.loading">Loading...</span>
+      </div>
+      <p class="muted" data-i18n="power.desc">
+        For reliable 24/7 kiosk operation, Wi-Fi power saving and screen
+        blanking must be off. Otherwise the Pi drops the AP after a few
+        minutes idle, or the screen turns black.
+      </p>
+      <div id="power-list" class="services-list" data-i18n="common.loading">Loading...</div>
+      <div class="btn-row" style="margin-top:14px">
+        <button id="power-refresh" class="btn" data-i18n="common.refresh">Refresh</button>
+        <button id="power-force" class="btn primary"
+                data-i18n="power.force">Force 24/7 mode now</button>
+      </div>
+      <p id="power-msg" class="muted" style="margin-top:8px"></p>
     </div>
   </section>
 
@@ -225,7 +246,7 @@
     <div class="card">
       <h2 data-i18n="settings.backup">Backup configuration</h2>
       <div class="btn-row">
-        <a href="#" class="btn" data-i18n="settings.export" onclick="event.preventDefault();alert('Demo: export disabled');">Export config</a>
+        <a href="/api/config/export" class="btn" data-i18n="settings.export">Export config</a>
       </div>
       <label style="margin-top:12px" data-i18n="settings.import">Import config (JSON file)
         <input type="file" id="import-file" accept="application/json">
@@ -254,10 +275,10 @@
 </div>
 
 <footer>
-  <span>&copy; Dennis Reuther 2026 &middot; Demo build</span>
+  <span>&copy; Dennis Reuther 2026</span>
 </footer>
 
-<!-- Mock backend MUST load before app.js -->
+<!-- Demo mock API must load BEFORE app.js -->
 <script src="demo-api.js"></script>
 <script src="i18n.js"></script>
 <script src="app.js"></script>

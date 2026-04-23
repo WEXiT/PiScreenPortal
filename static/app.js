@@ -1,6 +1,22 @@
 let cfg = null;
 let monitors = [];
 
+// Auto-redirect to /login when the session expires mid-session.
+// Wraps the global fetch so any 401 on /api/* paths sends the user to /login.
+(function installAuthInterceptor() {
+  const origFetch = window.fetch.bind(window);
+  window.fetch = async (input, init) => {
+    const r = await origFetch(input, init);
+    if (r.status === 401) {
+      const url = typeof input === "string" ? input : (input && input.url) || "";
+      if (url.startsWith("/api/") && !url.startsWith("/api/auth/status")) {
+        location.href = "/login";
+      }
+    }
+    return r;
+  };
+})();
+
 // ---------- Tabs ----------
 document.querySelectorAll(".tab").forEach(tab => {
   tab.addEventListener("click", () => {
@@ -150,6 +166,7 @@ document.getElementById("save").addEventListener("click", async () => {
     msg.textContent = t("common.applying");
     await fetch("/api/action/restart", {method:"POST"});
     msg.textContent = t("common.saved_restarted");
+    loadAuthStatus();
     setTimeout(()=>msg.textContent="", 4000);
   } else {
     msg.classList.add("error");
@@ -167,9 +184,43 @@ document.querySelectorAll("[data-act]").forEach(b => {
     };
     if (confirms[act] && !confirm(confirms[act])) return;
     b.disabled = true;
-    await fetch("/api/action/" + act, {method:"POST"});
+    try {
+      const r = await fetch("/api/action/" + act, {method:"POST"});
+      if (r.status === 401) { location.href = "/login"; return; }
+      if (!r.ok) {
+        let err = "?";
+        try { const j = await r.json(); err = j.error || err; } catch {}
+        alert(t("common.error") + ": " + err);
+      }
+    } catch (e) {
+      alert(t("common.error") + ": " + e);
+    }
     setTimeout(()=>{ b.disabled = false; refreshStatus(); }, 800);
   });
+});
+
+// ---------- Auth (header user + logout) ----------
+async function loadAuthStatus() {
+  try {
+    const s = await fetch("/api/auth/status").then(r => r.json());
+    const box = document.getElementById("header-user");
+    if (s.enabled && s.logged_in && s.user) {
+      document.getElementById("header-user-name").textContent = s.user;
+      box.hidden = false;
+    } else {
+      box.hidden = true;
+    }
+  } catch (e) {}
+}
+
+document.getElementById("btn-logout").addEventListener("click", async () => {
+  try {
+    await fetch("/logout", {
+      method: "POST",
+      headers: {"Accept": "application/json"},
+    });
+  } catch (e) {}
+  location.href = "/login";
 });
 
 // ---------- Import ----------
@@ -460,7 +511,202 @@ async function refreshPresentation() {
   } catch(e) {}
 }
 
+// ---------- Services & tools ----------
+async function loadServices() {
+  const host = document.getElementById("services-list");
+  const sessEl = document.getElementById("services-session");
+  try {
+    const d = await fetch("/api/services").then(r => r.json());
+    renderServices(d, host, sessEl);
+  } catch (e) {
+    host.textContent = t("common.error") + ": " + e;
+  }
+}
+
+function renderServices(d, host, sessEl) {
+  const sess = d.session || "unknown";
+  sessEl.innerHTML = `${t("svc.session")}
+      <span class="session-chip ${escape(sess)}">${escape(sess)}</span>`;
+
+  host.innerHTML = "";
+  (d.items || []).forEach(it => {
+    const row = document.createElement("div");
+
+    // Status-Klasse bestimmen
+    let cls = "idle";
+    let stateText = t("svc.idle");
+
+    if (!it.installed) {
+      cls = "bad";
+      stateText = t("svc.missing");
+    } else if (it.warn) {
+      cls = "warn";
+      stateText = t("svc.installed");
+    } else if (it.type === "binary") {
+      cls = "ok";
+      stateText = t("svc.installed");
+    } else if (it.running === true) {
+      cls = "ok";
+      stateText = t("svc.running");
+      if (it.pids && it.pids.length) {
+        stateText += " (" + it.pids.length + ")";
+      }
+    } else if (it.type === "systemd" && it.enabled) {
+      cls = "warn";
+      stateText = t("svc.stopped");
+    } else {
+      cls = "idle";
+      stateText = it.type === "systemd"
+        ? t("svc.stopped")
+        : t("svc.idle");
+    }
+
+    row.className = "svc " + cls;
+    row.innerHTML = `
+      <span class="svc-dot" aria-hidden="true"></span>
+      <div class="svc-main">
+        <div class="svc-title">
+          <span class="svc-label">${escape(it.label)}</span>
+          <span class="svc-target">${escape(it.target)}</span>
+        </div>
+        ${it.warn
+          ? `<div class="svc-warn">${escape(it.warn)}</div>`
+          : (it.note
+              ? `<div class="svc-note">${escape(it.note)}</div>`
+              : "")}
+      </div>
+      <span class="svc-state">${stateText}</span>
+    `;
+    host.appendChild(row);
+  });
+}
+
+document.getElementById("services-refresh").addEventListener("click", loadServices);
+
+// ---------- Energy / 24/7 mode ----------
+async function loadPower() {
+  const list = document.getElementById("power-list");
+  const badge = document.getElementById("power-overall");
+  try {
+    const d = await fetch("/api/power").then(r => r.json());
+    renderPower(d, list, badge);
+  } catch (e) {
+    list.textContent = t("common.error") + ": " + e;
+  }
+}
+
+function renderPower(d, list, badge) {
+  // Gesamtbewertung
+  const overall = d.overall || "idle";
+  const badgeTxt = overall === "ok"   ? t("power.state_ok") :
+                   overall === "warn" ? t("power.state_warn") :
+                                        t("svc.idle");
+  badge.textContent = badgeTxt;
+  badge.className = "svc-state"; // basisklasse
+  // Badge-Farbe an svc-Logik angleichen: wir nutzen die parent-.svc-Klassen-Tricks
+  // daher setzen wir den Span in einem zusätzlichen Wrapper:
+  badge.parentElement.classList.remove("power-ok","power-warn","power-idle");
+  badge.parentElement.classList.add("power-" + overall);
+
+  // Einzelne Zeilen
+  list.innerHTML = "";
+
+  // 1) WLAN-Powersave
+  const wp = d.wifi_powersave || {};
+  {
+    const row = document.createElement("div");
+    let cls, state;
+    if (!wp.available) {
+      cls = "idle";
+      state = t("svc.missing");
+    } else if (wp.state === "off" && wp.persistent_disabled) {
+      cls = "ok"; state = t("power.state_ok");
+    } else if (wp.state === "off") {
+      cls = "warn"; state = t("power.live_only");
+    } else {
+      cls = "bad"; state = t("power.state_bad");
+    }
+    const note = wp.available
+      ? `${t("power.iface")} <code>${escape(wp.iface||"?")}</code> &middot; ${t("power.live")}: <b>${escape(wp.state||"?")}</b> &middot; ${t("power.persistent")}: <b>${wp.persistent_disabled ? t("power.off") : t("power.on")}</b>`
+      : escape(wp.reason || "-");
+    row.className = "svc " + cls;
+    row.innerHTML = `
+      <span class="svc-dot"></span>
+      <div class="svc-main">
+        <div class="svc-title"><span class="svc-label">${t("power.wifi_powersave")}</span></div>
+        <div class="svc-note">${note}</div>
+      </div>
+      <span class="svc-state">${state}</span>
+    `;
+    list.appendChild(row);
+  }
+
+  // 2) Screen-Blanking (Screensaver + DPMS)
+  const sb = d.screen_blanking || {};
+  {
+    const row = document.createElement("div");
+    let cls, state;
+    if (!sb.available) {
+      cls = "idle";
+      state = sb.reason || t("svc.missing");
+    } else if (sb.blanking_off) {
+      cls = "ok"; state = t("power.state_ok");
+    } else {
+      cls = "warn"; state = t("power.state_warn");
+    }
+    const note = sb.available
+      ? `${t("power.screensaver")}: <b>${sb.screensaver_timeout === 0 ? t("power.off") : (sb.screensaver_timeout + "s")}</b> &middot; DPMS: <b>${sb.dpms_enabled ? t("power.on") : t("power.off")}</b>`
+      : escape(sb.reason || "-");
+    row.className = "svc " + cls;
+    row.innerHTML = `
+      <span class="svc-dot"></span>
+      <div class="svc-main">
+        <div class="svc-title"><span class="svc-label">${t("power.screen_blanking")}</span></div>
+        <div class="svc-note">${note}</div>
+      </div>
+      <span class="svc-state">${state}</span>
+    `;
+    list.appendChild(row);
+  }
+}
+
+document.getElementById("power-refresh").addEventListener("click", loadPower);
+
+document.getElementById("power-force").addEventListener("click", async () => {
+  if (!confirm(t("power.confirm_force"))) return;
+  const btn = document.getElementById("power-force");
+  const msg = document.getElementById("power-msg");
+  btn.disabled = true;
+  msg.classList.remove("error");
+  msg.textContent = t("power.applying");
+  try {
+    const r = await fetch("/api/power/disable-all", {method: "POST"});
+    const j = await r.json();
+    if (j.ok) {
+      msg.textContent = t("power.applied_ok");
+    } else {
+      msg.classList.add("error");
+      const failed = (j.steps || []).filter(s => !s.ok)
+        .map(s => `${s.step}: ${s.msg}`).join(" | ");
+      msg.textContent = t("power.applied_partial") + " " + failed;
+    }
+    renderPower(j.status || {}, document.getElementById("power-list"),
+                document.getElementById("power-overall"));
+  } catch (e) {
+    msg.classList.add("error");
+    msg.textContent = t("common.error") + ": " + e;
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => { msg.textContent = ""; msg.classList.remove("error"); }, 8000);
+  }
+});
+
 // ---------- Init ----------
 setInterval(refreshStatus, 5000);
 setInterval(refreshPresentation, 5000);
+setInterval(loadServices, 15000);
+setInterval(loadPower, 30000);
 load();
+loadAuthStatus();
+loadServices();
+loadPower();
