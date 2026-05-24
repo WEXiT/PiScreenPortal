@@ -30,6 +30,7 @@ function activateTab(name) {
 
   if (name === "wifi") loadWifi();
   if (name === "presentation") loadPresentation();
+  if (name === "settings") onSettingsOpen();
 }
 
 document.querySelectorAll(".tab").forEach(tab => {
@@ -46,6 +47,7 @@ document.addEventListener("i18n-applied", () => {
   loadServices();
   loadPower();
   loadMaintenanceStatus();
+  loadSystemUpdateStatus();
 });
 
 // ---------- Laden ----------
@@ -288,7 +290,7 @@ document.getElementById("import-file").addEventListener("change", async (e) => {
 function renderMaintenanceStatus(d) {
   const badge = document.getElementById("maintenance-next");
   const updateStatus = document.getElementById("update-status");
-  if (updateStatus) {
+  if (updateStatus && !updateStatus.dataset.scanned) {
     updateStatus.classList.remove("error", "ok");
     updateStatus.textContent = t("maint.version_current", {version: (d && d.version) || "?"});
   }
@@ -315,10 +317,25 @@ async function loadMaintenanceStatus() {
 
 document.getElementById("maintenance-refresh").addEventListener("click", loadMaintenanceStatus);
 
+function onSettingsOpen() {
+  loadMaintenanceStatus();
+  scanAppUpdates({auto: true});
+  scanSystemUpdates({auto: true});
+}
+
 function renderUpdateScan(j) {
   const status = document.getElementById("update-status");
+  status.dataset.scanned = "1";
   status.classList.remove("error", "ok");
-  if (j.update_available) {
+  if (j.version_missing && j.update_available) {
+    status.classList.add("ok");
+    status.textContent = t("maint.update_available_commit", {
+      current: j.current_head || "?",
+      remote: j.remote_head || "?",
+    });
+  } else if (j.version_missing) {
+    status.textContent = t("maint.no_update_commit", {version: j.current_head || "?"});
+  } else if (j.update_available) {
     status.classList.add("ok");
     status.textContent = t("maint.update_available", {
       current: j.current_version || "?",
@@ -334,10 +351,11 @@ function renderUpdateScan(j) {
   }
 }
 
-document.getElementById("scan-updates").addEventListener("click", async () => {
+async function scanAppUpdates(opts={}) {
   const btn = document.getElementById("scan-updates");
-  const msg = document.getElementById("maintenance-msg");
+  const msg = document.getElementById("updates-msg");
   const status = document.getElementById("update-status");
+  if (btn.disabled) return;
   btn.disabled = true;
   msg.classList.remove("error");
   status.classList.remove("error", "ok");
@@ -351,6 +369,7 @@ document.getElementById("scan-updates").addEventListener("click", async () => {
     } else {
       msg.classList.add("error");
       status.classList.add("error");
+      status.dataset.scanned = "1";
       status.textContent = t("maint.scan_failed") + " " +
         (translateBackendMessage(j.error) || "?");
       msg.textContent = "";
@@ -360,27 +379,31 @@ document.getElementById("scan-updates").addEventListener("click", async () => {
     msg.textContent = t("common.error") + ": " + e;
   } finally {
     btn.disabled = false;
-    setTimeout(() => { msg.textContent = ""; msg.classList.remove("error"); }, 9000);
+    if (!opts.auto) {
+      setTimeout(() => { msg.textContent = ""; msg.classList.remove("error"); }, 9000);
+    }
   }
-});
+}
+
+document.getElementById("scan-updates").addEventListener("click", () => scanAppUpdates());
 
 document.getElementById("boot-optimize").addEventListener("click", async () => {
-  if (!confirm(t("maint.confirm_boot_optimize"))) return;
+  if (!confirm(t("boot.confirm_optimize"))) return;
   const btn = document.getElementById("boot-optimize");
-  const msg = document.getElementById("maintenance-msg");
+  const msg = document.getElementById("boot-msg");
   btn.disabled = true;
   msg.classList.remove("error");
-  msg.textContent = t("maint.boot_optimize_running");
+  msg.textContent = t("boot.optimize_running");
   try {
     const r = await fetch("/api/maintenance/optimize-boot", {method: "POST"});
     const j = await r.json();
     if (j.ok) {
-      msg.textContent = t("maint.boot_optimize_ok");
+      msg.textContent = t("boot.optimize_ok");
     } else {
       msg.classList.add("error");
       const failed = (j.steps || []).filter(s => !s.ok)
         .map(s => `${s.step}: ${s.msg}`).join(" | ");
-      msg.textContent = t("maint.boot_optimize_failed") + " " + (failed || j.error || "?");
+      msg.textContent = t("boot.optimize_failed") + " " + (failed || j.error || "?");
     }
   } catch (e) {
     msg.classList.add("error");
@@ -394,7 +417,7 @@ document.getElementById("boot-optimize").addEventListener("click", async () => {
 document.getElementById("git-update").addEventListener("click", async () => {
   if (!confirm(t("maint.confirm_update"))) return;
   const btn = document.getElementById("git-update");
-  const msg = document.getElementById("maintenance-msg");
+  const msg = document.getElementById("updates-msg");
   btn.disabled = true;
   msg.classList.remove("error");
   msg.textContent = t("maint.update_running");
@@ -409,6 +432,144 @@ document.getElementById("git-update").addEventListener("click", async () => {
       msg.classList.add("error");
       msg.textContent = t("maint.update_failed") + " " +
         (translateBackendMessage(j.error) || "?");
+      btn.disabled = false;
+    }
+  } catch (e) {
+    msg.classList.add("error");
+    msg.textContent = t("common.error") + ": " + e;
+    btn.disabled = false;
+  }
+});
+
+function renderSystemUpdates(d) {
+  const badge = document.getElementById("system-updates-count");
+  const list = document.getElementById("system-updates-list");
+  const install = document.getElementById("system-updates-install");
+  const msg = document.getElementById("system-updates-msg");
+  const packages = (d && d.packages) || [];
+
+  badge.className = "svc-state";
+  if (d && d.running) {
+    badge.textContent = d.mode === "install"
+      ? t("updates.system_installing")
+      : t("updates.system_scanning");
+    list.innerHTML = `<p class="muted">${badge.textContent}</p>`;
+    install.disabled = true;
+    return;
+  }
+
+  if (d && d.error) {
+    badge.textContent = t("common.error");
+    badge.classList.add("error");
+    list.innerHTML = `<p class="muted error">${escape(translateBackendMessage(d.error) || d.error)}</p>`;
+    install.disabled = true;
+    return;
+  }
+
+  if (!d || d.ok === null || d.checked_at === null) {
+    badge.textContent = t("updates.system_unknown");
+    list.innerHTML = `<p class="muted">${t("updates.system_not_scanned")}</p>`;
+    install.disabled = true;
+    return;
+  }
+
+  if (!packages.length) {
+    badge.textContent = t("updates.system_none");
+    list.innerHTML = `<p class="muted">${t("updates.system_no_updates")}</p>`;
+    install.disabled = true;
+  } else {
+    badge.textContent = t("updates.system_count", {count: packages.length});
+    badge.classList.add("ok");
+    const shown = packages.slice(0, 30);
+    list.innerHTML = shown.map(p => `
+      <div class="update-package">
+        <span class="pkg-name">${escape(p.name)}</span>
+        <span class="pkg-version">${escape(p.current_version || "?")} -> ${escape(p.candidate_version || "?")}</span>
+      </div>
+    `).join("") + (packages.length > shown.length
+      ? `<p class="muted">${t("updates.system_more", {count: packages.length - shown.length})}</p>`
+      : "");
+    install.disabled = false;
+  }
+
+  if (d.reboot_required) {
+    msg.textContent = t("updates.reboot_required");
+  }
+}
+
+async function loadSystemUpdateStatus() {
+  try {
+    const d = await fetch("/api/maintenance/system-updates/status").then(r => r.json());
+    renderSystemUpdates(d);
+  } catch (e) {}
+}
+
+async function scanSystemUpdates(opts={}) {
+  const btn = document.getElementById("system-updates-scan");
+  const msg = document.getElementById("system-updates-msg");
+  if (btn.disabled) return;
+  btn.disabled = true;
+  msg.classList.remove("error");
+  msg.textContent = t("updates.system_scanning");
+  renderSystemUpdates({running: true, mode: "scan", packages: []});
+  try {
+    const r = await fetch("/api/maintenance/system-updates/check", {method: "POST"});
+    const j = await r.json();
+    renderSystemUpdates(j);
+    if (j.ok) {
+      msg.textContent = j.count
+        ? t("updates.system_found", {count: j.count})
+        : t("updates.system_no_updates");
+    } else {
+      msg.classList.add("error");
+      msg.textContent = t("updates.system_scan_failed") + " " +
+        (translateBackendMessage(j.error) || j.error || "?");
+    }
+  } catch (e) {
+    msg.classList.add("error");
+    msg.textContent = t("common.error") + ": " + e;
+  } finally {
+    btn.disabled = false;
+    if (!opts.auto) {
+      setTimeout(() => { msg.textContent = ""; msg.classList.remove("error"); }, 12000);
+    }
+  }
+}
+
+async function pollSystemUpdates() {
+  const d = await fetch("/api/maintenance/system-updates/status").then(r => r.json());
+  renderSystemUpdates(d);
+  if (d.running) {
+    setTimeout(pollSystemUpdates, 4000);
+  } else {
+    const msg = document.getElementById("system-updates-msg");
+    msg.classList.toggle("error", d.ok === false);
+    msg.textContent = d.ok === false
+      ? t("updates.system_install_failed") + " " + (translateBackendMessage(d.error) || d.error || "?")
+      : t("updates.system_install_done");
+  }
+}
+
+document.getElementById("system-updates-scan")
+  .addEventListener("click", () => scanSystemUpdates());
+
+document.getElementById("system-updates-install").addEventListener("click", async () => {
+  if (!confirm(t("updates.confirm_install_system"))) return;
+  const btn = document.getElementById("system-updates-install");
+  const msg = document.getElementById("system-updates-msg");
+  btn.disabled = true;
+  msg.classList.remove("error");
+  msg.textContent = t("updates.system_installing");
+  try {
+    const r = await fetch("/api/maintenance/system-updates/install", {method: "POST"});
+    const j = await r.json();
+    renderSystemUpdates(j);
+    if (j.ok) {
+      setTimeout(pollSystemUpdates, 1500);
+    } else {
+      msg.classList.add("error");
+      msg.textContent = t("updates.system_install_failed") + " " +
+        (translateBackendMessage(j.error) || j.error || "?");
       btn.disabled = false;
     }
   } catch (e) {
@@ -814,6 +975,8 @@ function translateBackendMessage(message) {
     "Ein Update laeuft bereits.": "maint.error.update_busy",
     "Git-Kommando hat zu lange gedauert.": "maint.error.git_timeout",
     "Git-Update hat zu lange gedauert.": "maint.error.update_timeout",
+    "A Raspberry update scan or install is already running.": "updates.error.busy",
+    "apt-get is not installed.": "updates.error.apt_missing",
     "Ungültige Config": "settings.error.invalid_config",
     "Ungültige JSON-Daten": "settings.error.invalid_json",
     "Wenn der Zugangsschutz aktiv ist, müssen Benutzername und Passwort gesetzt sein.": "settings.error.auth_required_fields",

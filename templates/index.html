@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="de">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <title>PiScreenPortal</title>
@@ -263,12 +263,46 @@
       </div>
       <div class="btn-row" style="margin-top:14px">
         <button id="maintenance-refresh" class="btn" data-i18n="common.refresh">Refresh</button>
-        <button id="scan-updates" class="btn" data-i18n="maint.scan_updates">Scan for updates</button>
-        <button id="boot-optimize" class="btn" data-i18n="maint.boot_optimize">Hide desktop at boot</button>
-        <button id="git-update" class="btn primary" data-i18n="maint.update_now">Update from Git & reboot</button>
       </div>
-      <p id="update-status" class="muted" style="margin-top:8px"></p>
       <p id="maintenance-msg" class="muted" style="margin-top:8px"></p>
+    </div>
+
+    <div class="card">
+      <h2 data-i18n="boot.title">Boot display</h2>
+      <p class="muted" data-i18n="boot.desc">Hide desktop icons, panel, cursor, and the early desktop flash behind a black boot cover.</p>
+      <div class="btn-row" style="margin-top:14px">
+        <button id="boot-optimize" class="btn" data-i18n="boot.optimize">Hide desktop at boot</button>
+      </div>
+      <p id="boot-msg" class="muted" style="margin-top:8px"></p>
+    </div>
+
+    <div class="card">
+      <h2 data-i18n="updates.title">Updates</h2>
+
+      <div class="settings-subsection">
+        <div class="flex-between">
+          <h3 data-i18n="updates.app_title">PiScreenPortal</h3>
+          <span id="update-status" class="svc-state">Loading...</span>
+        </div>
+        <div class="btn-row">
+          <button id="scan-updates" class="btn" data-i18n="updates.scan_app">Scan app updates</button>
+          <button id="git-update" class="btn primary" data-i18n="updates.update_app">Update from Git & reboot</button>
+        </div>
+        <p id="updates-msg" class="muted" style="margin-top:8px"></p>
+      </div>
+
+      <div class="settings-subsection">
+        <div class="flex-between">
+          <h3 data-i18n="updates.system_title">Raspberry Pi OS</h3>
+          <span id="system-updates-count" class="svc-state">Not scanned</span>
+        </div>
+        <div id="system-updates-list" class="updates-list muted">Open Settings to scan Raspberry updates.</div>
+        <div class="btn-row" style="margin-top:14px">
+          <button id="system-updates-scan" class="btn" data-i18n="updates.scan_system">Scan Raspberry updates</button>
+          <button id="system-updates-install" class="btn primary" data-i18n="updates.install_system">Install Raspberry updates</button>
+        </div>
+        <p id="system-updates-msg" class="muted" style="margin-top:8px"></p>
+      </div>
     </div>
 
     <div class="card">

@@ -810,6 +810,20 @@ class MaintenanceManager:
         self._started = False
         self._lock = threading.Lock()
         self._update_lock = threading.Lock()
+        self._system_update_lock = threading.Lock()
+        self._system_update_state_lock = threading.Lock()
+        self._system_update_state = {
+            "running": False,
+            "mode": "",
+            "ok": None,
+            "error": "",
+            "packages": [],
+            "count": 0,
+            "checked_at": None,
+            "installed_at": None,
+            "output": "",
+            "reboot_required": False,
+        }
 
     def start(self):
         with self._lock:
@@ -1024,10 +1038,21 @@ class MaintenanceManager:
             remote_version = self._git_text(["show", "origin/main:VERSION"],
                                             timeout=20).strip()
             if not remote_version:
-                return {"ok": False,
-                        "error": "Keine VERSION-Datei auf origin/main gefunden.",
-                        "current_version": local_version,
-                        "output": "\n\n".join(outputs)}
+                current_head = self._git_text(["rev-parse", "--short", "HEAD"])
+                remote_head = self._git_text(["rev-parse", "--short", "origin/main"])
+                return {
+                    "ok": True,
+                    "current_version": local_version,
+                    "remote_version": remote_head or "origin/main",
+                    "update_available": bool(
+                        current_head and remote_head and current_head != remote_head),
+                    "local_newer": False,
+                    "version_missing": True,
+                    "current_head": current_head,
+                    "remote_head": remote_head,
+                    "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "output": "\n\n".join(outputs),
+                }
 
             cmp = self._compare_versions(local_version, remote_version)
             return {
@@ -1113,6 +1138,148 @@ class MaintenanceManager:
             return {"ok": False, "error": str(e)}
         finally:
             self._update_lock.release()
+
+    def _system_state(self) -> dict:
+        with self._system_update_state_lock:
+            return _clone_default(self._system_update_state)
+
+    def _set_system_state(self, **updates) -> dict:
+        with self._system_update_state_lock:
+            self._system_update_state.update(updates)
+            return _clone_default(self._system_update_state)
+
+    def _run_system_cmd(self, cmd: list[str], timeout: int = 120) -> tuple[bool, str]:
+        env = os.environ.copy()
+        env["DEBIAN_FRONTEND"] = "noninteractive"
+        env["APT_LISTCHANGES_FRONTEND"] = "none"
+        try:
+            r = subprocess.run(cmd, env=env, capture_output=True, timeout=timeout)
+            out = (r.stdout + r.stderr).decode("utf-8", "ignore").strip()
+            if r.returncode != 0:
+                return False, out or f"Exit-Code {r.returncode}"
+            return True, out
+        except subprocess.TimeoutExpired:
+            return False, f"{cmd[0]} timed out."
+        except Exception as e:
+            return False, str(e)
+
+    def _parse_upgradable_packages(self, output: str) -> list[dict]:
+        packages = []
+        for raw in (output or "").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("Listing...") or "/" not in line:
+                continue
+            name, rest = line.split("/", 1)
+            parts = rest.split()
+            if len(parts) < 2:
+                continue
+            current = ""
+            m = re.search(r"\[upgradable from:\s*([^\]]+)\]", line)
+            if m:
+                current = m.group(1).strip()
+            packages.append({
+                "name": name,
+                "source": parts[0],
+                "candidate_version": parts[1],
+                "current_version": current,
+            })
+        return packages
+
+    def _apt_list_upgradable(self) -> tuple[bool, str, list[dict]]:
+        apt = shutil.which("apt")
+        if not apt:
+            return False, "apt is not installed.", []
+        ok, out = self._run_system_cmd([apt, "list", "--upgradable"], timeout=90)
+        return ok, out, self._parse_upgradable_packages(out if ok else "")
+
+    def check_system_updates(self) -> dict:
+        if not shutil.which("apt-get"):
+            state = self._set_system_state(
+                running=False, mode="scan", ok=False,
+                error="apt-get is not installed.", packages=[], count=0)
+            return {"ok": False, **state}
+        if not self._system_update_lock.acquire(blocking=False):
+            return {**self._system_state(), "ok": False,
+                    "error": "A Raspberry update scan or install is already running."}
+        try:
+            self._set_system_state(
+                running=True, mode="scan", ok=None, error="", output="")
+            apt_get = shutil.which("apt-get") or "apt-get"
+            ok, update_out = self._run_system_cmd(
+                ["sudo", "-n", apt_get, "update"], timeout=180)
+            if not ok:
+                state = self._set_system_state(
+                    running=False, ok=False, error=update_out,
+                    output=update_out)
+                return {"ok": False, **state}
+
+            list_ok, list_out, packages = self._apt_list_upgradable()
+            if not list_ok:
+                state = self._set_system_state(
+                    running=False, ok=False, error=list_out,
+                    output=f"{update_out}\n\n{list_out}".strip())
+                return {"ok": False, **state}
+
+            state = self._set_system_state(
+                running=False, mode="scan", ok=True, error="",
+                packages=packages, count=len(packages),
+                checked_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+                output=f"{update_out}\n\n{list_out}".strip(),
+                reboot_required=Path("/var/run/reboot-required").exists())
+            return {"ok": True, **state}
+        finally:
+            self._system_update_lock.release()
+
+    def system_update_status(self) -> dict:
+        return {"ok": True, **self._system_state()}
+
+    def install_system_updates(self) -> dict:
+        if not shutil.which("apt-get"):
+            state = self._set_system_state(
+                running=False, mode="install", ok=False,
+                error="apt-get is not installed.")
+            return {"ok": False, **state}
+        if not self._system_update_lock.acquire(blocking=False):
+            return {**self._system_state(), "ok": False,
+                    "error": "A Raspberry update scan or install is already running."}
+
+        apt_get = shutil.which("apt-get") or "apt-get"
+        self._set_system_state(
+            running=True, mode="install", ok=None, error="", output="")
+
+        def worker():
+            outputs = []
+            try:
+                for cmd, timeout in (
+                    (["sudo", "-n", apt_get, "update"], 180),
+                    (["sudo", "-n", apt_get, "-y", "upgrade"], 1800),
+                    (["sudo", "-n", apt_get, "-y", "autoremove"], 600),
+                ):
+                    ok, out = self._run_system_cmd(cmd, timeout=timeout)
+                    outputs.append(f"$ {' '.join(cmd)}\n{out}".strip())
+                    if not ok:
+                        self._set_system_state(
+                            running=False, ok=False, error=out,
+                            output="\n\n".join(outputs))
+                        return
+
+                list_ok, list_out, packages = self._apt_list_upgradable()
+                if list_out:
+                    outputs.append(f"$ apt list --upgradable\n{list_out}".strip())
+                self._set_system_state(
+                    running=False, mode="install", ok=list_ok,
+                    error="" if list_ok else list_out,
+                    packages=packages if list_ok else [],
+                    count=len(packages) if list_ok else 0,
+                    installed_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+                    checked_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+                    output="\n\n".join(outputs),
+                    reboot_required=Path("/var/run/reboot-required").exists())
+            finally:
+                self._system_update_lock.release()
+
+        threading.Thread(target=worker, daemon=True).start()
+        return {**self._system_state(), "ok": True, "started": True}
 
     def optimize_boot_view(self) -> dict:
         """Best-effort: Desktop beim Boot optisch in den Hintergrund schieben.
@@ -1620,6 +1787,7 @@ class KioskManager:
         self.unclutter_proc = None
         self.lock = threading.Lock()
         self._watcher_started = False
+        self._desired_running = False
 
     def _start_unclutter(self) -> None:
         if self.unclutter_proc and self.unclutter_proc.poll() is None:
@@ -1764,7 +1932,10 @@ class KioskManager:
             except Exception as e:
                 log(f"Stop-Fehler {idx}: {e}")
 
-    def stop_all(self):
+    def stop_all(self, keep_desired: bool = False):
+        if not keep_desired:
+            with self.lock:
+                self._desired_running = False
         for idx in list(self.processes.keys()):
             self.stop_screen(idx)
         subprocess.call(["pkill", "-f", "chromium"], env=self._env())
@@ -1772,6 +1943,8 @@ class KioskManager:
 
     def start_all(self, cfg: dict | None = None):
         cfg = cfg or load_config()
+        with self.lock:
+            self._desired_running = True
         monitors = detect_monitors()
         log(f"Erkannte Monitore: {[m['name'] for m in monitors]}")
         # Zuerst alte Prozesse aufräumen, die zu entfernten/deaktivierten
@@ -1794,7 +1967,7 @@ class KioskManager:
         self._ensure_watcher()
 
     def restart_all(self):
-        self.stop_all()
+        self.stop_all(keep_desired=True)
         time.sleep(1)
         self.start_all()
 
@@ -1815,6 +1988,10 @@ class KioskManager:
                 time.sleep(5)
                 c = load_config()
                 if not c.get("restart_on_crash"):
+                    continue
+                with self.lock:
+                    desired = self._desired_running
+                if not desired:
                     continue
                 monitors = detect_monitors()
                 for idx, screen in enumerate(c["screens"]):
@@ -2001,10 +2178,10 @@ def api_config():
 @app.route("/api/config/export")
 @requires_auth
 def api_config_export():
-    if not CONFIG_FILE.exists():
-        save_config(load_config())
-    return send_file(CONFIG_FILE, as_attachment=True,
-                     download_name="pi-kiosk-config.json")
+    payload = json.dumps(load_config(), indent=2, ensure_ascii=False)
+    buf = io.BytesIO(payload.encode("utf-8"))
+    return send_file(buf, as_attachment=True, mimetype="application/json",
+                     download_name="piscreenportal-config.json")
 
 
 @app.route("/api/config/import", methods=["POST"])
@@ -2067,6 +2244,28 @@ def api_maintenance_update():
 @requires_auth
 def api_maintenance_check_updates():
     result = maintenance.check_for_updates()
+    status = 200 if result.get("ok") else 500
+    return jsonify(result), status
+
+
+@app.route("/api/maintenance/system-updates/status")
+@requires_auth
+def api_maintenance_system_updates_status():
+    return jsonify(maintenance.system_update_status())
+
+
+@app.route("/api/maintenance/system-updates/check", methods=["POST"])
+@requires_auth
+def api_maintenance_system_updates_check():
+    result = maintenance.check_system_updates()
+    status = 200 if result.get("ok") else 500
+    return jsonify(result), status
+
+
+@app.route("/api/maintenance/system-updates/install", methods=["POST"])
+@requires_auth
+def api_maintenance_system_updates_install():
+    result = maintenance.install_system_updates()
     status = 200 if result.get("ok") else 500
     return jsonify(result), status
 
@@ -2178,23 +2377,10 @@ def api_action(name):
                 return jsonify({"ok": False,
                                 "error": f"Shutdown fehlgeschlagen: {msg}"}), 500
         elif name in ("screen-off", "screen-on"):
-            if not shutil.which("xset"):
-                return jsonify({"ok": False,
-                                "error": "xset ist nicht installiert."}), 500
-            # Hinweis: xset funktioniert nur unter X11 bzw. XWayland. Unter
-            # reinem Wayland hat DPMS-Steuerung auf diese Weise keinen Effekt.
-            state = "off" if name == "screen-off" else "on"
-            try:
-                subprocess.check_call(["xset", "dpms", "force", state],
-                                      env=self_env(),
-                                      stdout=subprocess.DEVNULL,
-                                      stderr=subprocess.DEVNULL,
-                                      timeout=5)
-            except subprocess.CalledProcessError as e:
-                return jsonify({"ok": False,
-                                "error": f"xset: Exit-Code {e.returncode}. "
-                                         "Unter Wayland evtl. nicht "
-                                         "unterstützt."}), 500
+            ok, msg = set_monitor_power(name == "screen-on")
+            if not ok:
+                return jsonify({"ok": False, "error": msg}), 500
+            return jsonify({"ok": True, "method": msg})
         else:
             return jsonify({"ok": False, "error": "Unbekannt"}), 400
     except Exception as e:
@@ -2208,6 +2394,69 @@ def self_env():
     env.setdefault("DISPLAY", ":0")
     env.setdefault("XAUTHORITY", default_xauthority())
     return env
+
+
+def _run_monitor_power_cmd(cmd: list[str], env: dict | None = None) -> tuple[bool, str]:
+    try:
+        r = subprocess.run(cmd, env=env, capture_output=True, timeout=8)
+        msg = (r.stdout + r.stderr).decode("utf-8", "ignore").strip()
+        if r.returncode != 0:
+            return False, msg or f"exit code {r.returncode}"
+        return True, msg
+    except FileNotFoundError:
+        return False, f"{cmd[0]} is not installed"
+    except subprocess.TimeoutExpired:
+        return False, f"{cmd[0]} timed out"
+    except Exception as e:
+        return False, str(e)
+
+
+def _monitor_power_xset(power_on: bool) -> tuple[bool, str]:
+    env = self_env()
+    commands = (
+        [["xset", "dpms", "force", "on"],
+         ["xset", "s", "off"],
+         ["xset", "-dpms"],
+         ["xset", "s", "noblank"]]
+        if power_on else
+        [["xset", "+dpms"],
+         ["xset", "dpms", "force", "off"]]
+    )
+    messages = []
+    for cmd in commands:
+        ok, msg = _run_monitor_power_cmd(cmd, env=env)
+        if msg:
+            messages.append(msg)
+        if not ok:
+            return False, msg
+    return True, "; ".join(messages)
+
+
+def _monitor_power_vcgencmd(power_on: bool) -> tuple[bool, str]:
+    value = "1" if power_on else "0"
+    return _run_monitor_power_cmd(["vcgencmd", "display_power", value])
+
+
+def set_monitor_power(power_on: bool) -> tuple[bool, str]:
+    attempts = []
+    sess = session_type()
+    methods = []
+    if sess == "x11" and shutil.which("xset"):
+        methods.append(("xset", _monitor_power_xset))
+    if shutil.which("vcgencmd"):
+        methods.append(("vcgencmd", _monitor_power_vcgencmd))
+    if shutil.which("xset") and not any(name == "xset" for name, _ in methods):
+        methods.append(("xset", _monitor_power_xset))
+
+    if not methods:
+        return False, "No monitor power tool found (xset or vcgencmd)."
+
+    for name, fn in methods:
+        ok, msg = fn(power_on)
+        if ok:
+            return True, name
+        attempts.append(f"{name}: {msg}")
+    return False, " | ".join(attempts)
 
 
 @app.route("/api/wifi")

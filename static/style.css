@@ -188,7 +188,12 @@ body.login-body {
 .svc.warn .svc-state { color: var(--warn);    border-color: rgba(180,83,9,.35);  background: rgba(180,83,9,.08); }
 .svc.bad  .svc-state { color: var(--danger);  border-color: rgba(185,28,28,.35); background: rgba(185,28,28,.08); }
 .svc-state.maint-active { color: var(--success); border-color: rgba(4,120,87,.35); background: rgba(4,120,87,.08); }
+.svc-state.ok { color: var(--success); border-color: rgba(4,120,87,.35); background: rgba(4,120,87,.08); }
+.svc-state.error { color: var(--danger); border-color: rgba(185,28,28,.35); background: rgba(185,28,28,.08); }
 #maintenance-msg.error { color: var(--danger); }
+#updates-msg.error { color: var(--danger); }
+#boot-msg.error { color: var(--danger); }
+#system-updates-msg.error { color: var(--danger); }
 #update-status.error { color: var(--danger); }
 #update-status.ok { color: var(--success); }
 
@@ -369,6 +374,10 @@ main {
   .lang-switch { justify-content: center; }
   .support-link { width: min(100%, 520px); }
 }
+@media (max-width: 640px) {
+  .update-package { grid-template-columns: 1fr; }
+  .pkg-version { text-align: left; }
+}
 
 /* ------ Card ------ */
 .card {
@@ -384,7 +393,50 @@ main {
   font-weight: 600;
   color: var(--text);
 }
+.settings-subsection {
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+  margin-top: 16px;
+}
+.settings-subsection:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+  margin-top: 0;
+}
+.settings-subsection h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.updates-list {
+  display: grid;
+  gap: 8px;
+}
+.update-package {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(160px, auto);
+  gap: 10px;
+  align-items: center;
+  padding: 9px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+}
+.pkg-name {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.pkg-version {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
 .muted { color: var(--muted); font-size: 13px; }
+.muted.error { color: var(--danger); }
 .flex-between { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
 .flex-between h2 { margin: 0; }
 

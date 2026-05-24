@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# PiScreenPortal Installer für Raspberry Pi OS 64-bit (Bookworm)
-# Installiert ALLES was fehlt automatisch.
+# PiScreenPortal installer for Raspberry Pi OS 64-bit (Bookworm)
+# Automatically installs all missing dependencies.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -8,15 +8,15 @@ USER_NAME="${SUDO_USER:-$USER}"
 USER_HOME="$(getent passwd "$USER_NAME" | cut -d: -f6)"
 USER_GROUP="$(id -gn "$USER_NAME")"
 if [ -z "$USER_HOME" ] || [ -z "$USER_GROUP" ]; then
-    echo "!!! Benutzer '$USER_NAME' konnte nicht vollstaendig ermittelt werden."
+    echo "!!! Could not fully resolve user '$USER_NAME'."
     exit 1
 fi
 
 echo "=========================================="
 echo " PiScreenPortal Installer"
-echo " Verzeichnis: $DIR"
-echo " Benutzer:    $USER_NAME"
-echo " Gruppe:      $USER_GROUP"
+echo " Directory: $DIR"
+echo " User:      $USER_NAME"
+echo " Group:     $USER_GROUP"
 echo "=========================================="
 
 need_cmd() {
@@ -31,60 +31,60 @@ apt_install() {
         fi
     done
     if [ ${#pkgs[@]} -gt 0 ]; then
-        echo ">>> Installiere: ${pkgs[*]}"
+        echo ">>> Installing: ${pkgs[*]}"
         sudo apt install -y "${pkgs[@]}"
     else
-        echo ">>> Bereits installiert: $*"
+        echo ">>> Already installed: $*"
     fi
 }
 
 # --------------------------------------------------
-# 1. System aktualisieren
+# 1. Update package index
 # --------------------------------------------------
 echo ">>> [1/7] apt update"
 sudo apt update
 
 # --------------------------------------------------
-# 2. Basispakete
+# 2. Base packages
 # --------------------------------------------------
-echo ">>> [2/7] Basispakete"
+echo ">>> [2/7] Base packages"
 apt_install python3 python3-venv python3-pip python3-dev \
             git curl wget ca-certificates
 
 # --------------------------------------------------
-# 3. X11 & Kiosk-Tools
+# 3. X11 and kiosk tools
 # --------------------------------------------------
-echo ">>> [3/7] Kiosk-Werkzeuge"
-# Basiswerkzeuge zuerst (ohne Chromium)
+echo ">>> [3/7] Kiosk tools"
+# Install base tools first (without Chromium).
 apt_install x11-xserver-utils xdotool unclutter fonts-dejavu \
             network-manager avahi-daemon avahi-utils
 
-# Chromium: verschiedene Paketnamen je nach Distribution durchprobieren
+# Chromium package names differ between distributions.
 CHROMIUM_PKG=""
 for cand in chromium chromium-browser; do
     if sudo apt-get install -y "$cand" 2>/dev/null; then
         CHROMIUM_PKG="$cand"
-        echo ">>> Chromium installiert als Paket '$cand'"
+        echo ">>> Chromium installed as package '$cand'"
         break
     fi
 done
 if [ -z "$CHROMIUM_PKG" ]; then
-    echo "!!! Chromium konnte nicht aus den Paketquellen installiert werden."
-    echo "!!! Bitte manuell installieren, z. B.: sudo apt install chromium"
+    echo "!!! Chromium could not be installed from the package repositories."
+    echo "!!! Please install it manually, for example: sudo apt install chromium"
     exit 1
 fi
 
 # --------------------------------------------------
-# 4. UxPlay (AirPlay-Empfänger) - optional
+# 4. UxPlay (AirPlay receiver) - optional
 # --------------------------------------------------
 echo ">>> [4/7] UxPlay (AirPlay)"
 if need_cmd uxplay; then
-    echo ">>> uxplay bereits vorhanden."
+    echo ">>> uxplay is already installed."
 elif apt-cache show uxplay >/dev/null 2>&1 && \
      apt-cache policy uxplay | grep -q "Candidate: [^(]"; then
-    sudo apt install -y uxplay || echo ">>> uxplay-Paket verfügbar aber Installation fehlgeschlagen."
+    sudo apt install -y uxplay || echo ">>> uxplay package is available, but installation failed."
 else
-    echo ">>> uxplay nicht in Paketquellen. Versuche Bau aus Quellcode..."
+    echo ">>> uxplay is not in the package repositories. Trying source build..."
     BUILD_DEPS=(cmake build-essential pkg-config libssl-dev libplist-dev
                 libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
                 gstreamer1.0-plugins-base gstreamer1.0-plugins-good
@@ -96,22 +96,22 @@ else
     if git clone --depth=1 https://github.com/FDH2/UxPlay.git "$TMP/UxPlay"; then
         cd "$TMP/UxPlay"
         if cmake . && make -j"$(nproc)" && sudo make install; then
-            echo ">>> uxplay aus Quellcode erfolgreich installiert."
+            echo ">>> uxplay was built and installed successfully."
         else
-            echo "!!! UxPlay-Build fehlgeschlagen. AirPlay ist deaktiviert."
-            echo "!!! Installation kann später nachgeholt werden; Kiosk funktioniert trotzdem."
+            echo "!!! UxPlay build failed. AirPlay is disabled."
+            echo "!!! You can install it later; the kiosk still works without it."
         fi
         cd "$DIR"
         rm -rf "$TMP"
     else
-        echo "!!! UxPlay-Bau übersprungen (kein Internet?). AirPlay deaktiviert."
+        echo "!!! Skipped UxPlay build (network unavailable?). AirPlay is disabled."
     fi
 fi
 
 # --------------------------------------------------
 # 5. Python venv + Flask + qrcode
 # --------------------------------------------------
-echo ">>> [5/7] Python-Umgebung"
+echo ">>> [5/7] Python environment"
 if [ ! -d "$DIR/venv" ]; then
     python3 -m venv "$DIR/venv"
 fi
@@ -119,28 +119,27 @@ fi
 "$DIR/venv/bin/pip" install -r "$DIR/requirements.txt"
 
 # --------------------------------------------------
-# 6. Sudo-Rechte (reboot, shutdown, nmcli)
+# 6. Sudo permissions (reboot, shutdown, nmcli, apt updates)
 # --------------------------------------------------
-echo ">>> [6/7] Sudo-Rechte"
+echo ">>> [6/7] Sudo permissions"
 SUDO_FILE="/etc/sudoers.d/pi-kiosk"
-# Hinweis: sudo folgt Symlinks bei der Pfadprüfung NICHT. Auf Bookworm+ liegen
-# reboot/shutdown unter /usr/sbin/, auf älteren Systemen unter /sbin/.
-# Wir listen beide Pfade explizit, damit die Quick Actions zuverlässig laufen.
+# sudo does not follow symlinks while checking command paths. Bookworm+ uses
+# /usr/sbin for reboot/shutdown; older systems may use /sbin. Keep both.
 sudo tee "$SUDO_FILE" >/dev/null <<EOF
-$USER_NAME ALL=(ALL) NOPASSWD: /sbin/reboot, /usr/sbin/reboot, /sbin/shutdown, /usr/sbin/shutdown, /usr/bin/nmcli
+$USER_NAME ALL=(ALL) NOPASSWD: /sbin/reboot, /usr/sbin/reboot, /sbin/shutdown, /usr/sbin/shutdown, /usr/bin/nmcli, /usr/bin/apt, /usr/bin/apt-get
 EOF
 sudo chmod 440 "$SUDO_FILE"
-# Syntax der sudoers-Datei pruefen, damit wir uns nicht selbst aussperren
+# Validate sudoers syntax before continuing.
 if ! sudo visudo -cf "$SUDO_FILE" >/dev/null; then
-    echo "!!! sudoers-Datei fehlerhaft, wird entfernt."
+    echo "!!! sudoers file is invalid and will be removed."
     sudo rm -f "$SUDO_FILE"
     exit 1
 fi
 
 # --------------------------------------------------
-# 7. systemd-Service
+# 7. systemd service
 # --------------------------------------------------
-echo ">>> [7/7] systemd-Service"
+echo ">>> [7/7] systemd service"
 SERVICE_SRC="$DIR/pi-kiosk.service"
 SERVICE_DST="/etc/systemd/system/pi-kiosk.service"
 sudo sed -e "s|__USER__|$USER_NAME|g" -e "s|__DIR__|$DIR|g" \
@@ -150,11 +149,11 @@ sudo sed -e "s|__USER__|$USER_NAME|g" -e "s|__DIR__|$DIR|g" \
 sudo systemctl daemon-reload
 sudo systemctl enable pi-kiosk.service
 
-# GNOME-Keyring-Dialog (Chromium-Passwort-Prompt) komplett deaktivieren
+# Disable the GNOME keyring dialog (Chromium password prompt).
 # --------------------------------------------------
-# Vorhandenen Keyring löschen, damit Chromium nie wieder danach fragt
+# Remove existing keyrings so Chromium does not prompt for them.
 rm -rf "$USER_HOME/.local/share/keyrings" 2>/dev/null || true
-# gnome-keyring Autostarts unterdrücken
+# Disable gnome-keyring autostart entries.
 KR_AUTOSTART_DIR="$USER_HOME/.config/autostart"
 mkdir -p "$KR_AUTOSTART_DIR"
 for f in gnome-keyring-pkcs11 gnome-keyring-secrets gnome-keyring-ssh; do
@@ -168,7 +167,7 @@ EOF
 done
 chown -R "$USER_NAME":"$USER_NAME" "$KR_AUTOSTART_DIR"
 
-# Desktop-Icon anlegen (öffnet das Webinterface im Chromium)
+# Create a desktop launcher that opens the web interface in Chromium.
 DESKTOP_DIR="$USER_HOME/Desktop"
 if [ ! -d "$DESKTOP_DIR" ]; then
     mkdir -p "$DESKTOP_DIR"
@@ -225,7 +224,7 @@ cat > "$DESKTOP_FILE" <<EOF
 Version=1.0
 Type=Application
 Name=PiScreenPortal
-Comment=Webinterface der PiScreenPortal-Steuerung öffnen
+Comment=Open the PiScreenPortal web interface
 Exec=$OPEN_SCRIPT
 Icon=chromium
 Terminal=false
@@ -234,25 +233,24 @@ StartupNotify=true
 EOF
 chmod +x "$DESKTOP_FILE"
 chown "$USER_NAME":"$USER_NAME" "$DESKTOP_FILE"
-# Auf manchen Desktops muss die Datei als "vertrauenswürdig" markiert werden
+# Some desktops require the launcher to be marked as trusted.
 if command -v gio >/dev/null 2>&1; then
     sudo -u "$USER_NAME" gio set "$DESKTOP_FILE" metadata::trusted true 2>/dev/null || true
 fi
 
 # --------------------------------------------------
-# 24/7-Kiosk-Modus: WLAN-Powersave und Screen-Blanking dauerhaft aus.
-# Sonst trennt der Pi im Idle den AP oder schaltet nach 10 min den
-# Bildschirm ab - beides toedlich fuer Dauerbetrieb.
+# 24/7 kiosk mode: keep Wi-Fi power saving and screen blanking disabled.
+# Otherwise the Pi can drop Wi-Fi while idle or blank the screen after a
+# few minutes, both of which are bad for unattended kiosk operation.
 # --------------------------------------------------
-echo ">>> 24/7-Modus: WLAN-Powersave dauerhaft aus"
+echo ">>> 24/7 mode: permanently disabling Wi-Fi power saving"
 NM_CONF_DIR="/etc/NetworkManager/conf.d"
 NM_CONF="$NM_CONF_DIR/99-pi-kiosk-powersave.conf"
 sudo mkdir -p "$NM_CONF_DIR"
 sudo tee "$NM_CONF" >/dev/null <<'EOF'
-# Deaktiviert WLAN-Powersaving fuer alle Verbindungen.
-# 2 = disable, 3 = enable (NM-Default ist 3 auf Bookworm+).
-# Von PiScreenPortal automatisch angelegt - nicht aendern wenn du im
-# 24/7-Betrieb kein zufaelliges Disconnect willst.
+# Disables Wi-Fi power saving for all connections.
+# 2 = disable, 3 = enable (NetworkManager default on Bookworm+).
+# Created by PiScreenPortal. Keep this enabled for reliable 24/7 operation.
 [connection]
 wifi.powersave = 2
 EOF
@@ -260,7 +258,7 @@ if systemctl is-active --quiet NetworkManager; then
     sudo systemctl reload NetworkManager || sudo systemctl restart NetworkManager
 fi
 
-echo ">>> 24/7-Modus: Bildschirmschoner / DPMS dauerhaft aus (X11 LXDE autostart)"
+echo ">>> 24/7 mode: permanently disabling screensaver / DPMS (X11 LXDE autostart)"
 AUTOSTART_DIR="$USER_HOME/.config/lxsession/LXDE-pi"
 AUTOSTART="$AUTOSTART_DIR/autostart"
 if [ -d "$AUTOSTART_DIR" ] && [ -f "$AUTOSTART" ]; then
@@ -271,7 +269,7 @@ if [ -d "$AUTOSTART_DIR" ] && [ -f "$AUTOSTART" ]; then
     fi
 fi
 
-# Wayfire (Wayland unter Pi OS Bookworm+): Idle-Timeout auf 0
+# Wayfire (Wayland on Pi OS Bookworm+): set idle timeouts to 0.
 WAYFIRE_INI="$USER_HOME/.config/wayfire.ini"
 if [ -f "$WAYFIRE_INI" ]; then
     if ! grep -q "^\[idle\]" "$WAYFIRE_INI"; then
@@ -283,20 +281,18 @@ if [ -f "$WAYFIRE_INI" ]; then
     fi
 fi
 
-# labwc (Wayland auf Trixie+): kanshi / swayidle deaktivieren falls aktiv
-# Hinweis: labwc nutzt wlopm/swayidle-aehnliche Mechanik; auf Pi OS wird
-# defaultmaessig nichts gestartet, darum kein Eingriff noetig.
+# labwc (Wayland on Trixie+): no change needed by default on Raspberry Pi OS.
 
 # --------------------------------------------------
-# Fertig
+# Done
 # --------------------------------------------------
 IP="$(hostname -I | awk '{print $1}')"
 PORT=2411
 
 # --------------------------------------------------
-# Dienst automatisch starten / neu starten
+# Start or restart the service.
 # --------------------------------------------------
-echo ">>> Starte pi-kiosk.service..."
+echo ">>> Starting pi-kiosk.service..."
 if sudo systemctl is-active --quiet pi-kiosk; then
     sudo systemctl restart pi-kiosk
 else
@@ -307,12 +303,12 @@ sudo systemctl --no-pager --lines=0 status pi-kiosk || true
 
 echo ""
 echo "=========================================="
-echo " Installation abgeschlossen."
+echo " Installation complete."
 echo "=========================================="
 echo ""
-echo " Webinterface im Browser:"
+echo " Web interface:"
 echo "   http://$IP:$PORT"
 echo ""
-echo " Dienst-Status:  sudo systemctl status pi-kiosk"
-echo " Live-Log:       journalctl -u pi-kiosk -f"
+echo " Service status: sudo systemctl status pi-kiosk"
+echo " Live log:       journalctl -u pi-kiosk -f"
 echo ""
