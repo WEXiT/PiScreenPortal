@@ -6,3 +6,4 @@ kiosk.log
 maintenance_state.json
 .secret_key
 chromium-profile-*/
+
