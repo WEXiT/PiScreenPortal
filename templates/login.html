@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PiScreenPortal &ndash; Login</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="login-body">
+
+<main class="login-wrap">
+  <form class="login-card" method="post" action="/login" autocomplete="on">
+    <div class="login-brand">
+      <img src="/static/logo.png" alt="PiScreenPortal"
+           class="login-logo"
+           onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+      <h1 style="display:none">PiScreenPortal</h1>
+      <p class="muted login-sub">Sign in to continue</p>
+    </div>
+
+    {% if error %}
+      <div class="login-error" role="alert">
+        Incorrect username or password.
+      </div>
+    {% endif %}
+
+    <label>
+      <span>Username</span>
+      <input type="text" name="username" autocomplete="username"
+             value="{{ username|e }}" required autofocus>
+    </label>
+
+    <label>
+      <span>Password</span>
+      <input type="password" name="password" autocomplete="current-password"
+             required>
+    </label>
+
+    <input type="hidden" name="next" value="{{ next|e }}">
+
+    <button type="submit" class="btn primary btn-block">Sign in</button>
+
+    <p class="muted login-foot">
+      &copy; Dennis Reuther 2026
+    </p>
+  </form>
+</main>
+
+</body>
+</html>

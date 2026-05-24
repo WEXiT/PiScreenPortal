@@ -1,0 +1,8 @@
+.DS_Store
+__pycache__/
+venv/
+config.json
+kiosk.log
+maintenance_state.json
+.secret_key
+chromium-profile-*/
