@@ -17,6 +17,7 @@ let monitors = [];
   };
 })();
 
+
 // ---------- Tabs ----------
 function activateTab(name) {
   const tab = document.querySelector(`.tab[data-tab="${name}"]`);

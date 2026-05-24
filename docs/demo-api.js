@@ -5,6 +5,7 @@
  * returns realistic-looking data from an in-memory fake state.
  * No real Raspberry Pi is contacted.
  */
+ 
 (function () {
   "use strict";
 

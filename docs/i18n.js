@@ -1,6 +1,7 @@
 // Simple i18n for PiScreenPortal.
 // Two locales: en (default) and de.
 
+
 window.I18N = {
   en: {
     "header.language": "Language",

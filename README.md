@@ -26,6 +26,7 @@ PiScreenPortal turns a Raspberry Pi into a configurable digital signage and meet
 - **Bilingual UI** – English (default) and German, switchable in the header
 - **Password protection** with a proper login page and session cookie (stay signed in for 14 days)
 - **Import / export configuration** as JSON
+- **Version Check, Updater and more in V3
 
 ## Demo
 👉 [Live Demo](https://wexit.github.io/PiScreenPortal/docs)
