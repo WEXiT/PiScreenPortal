@@ -12,6 +12,8 @@
 
 PiScreenPortal turns a Raspberry Pi into a configurable digital signage and meeting-room appliance. Every monitor can show a different URL in full-screen Chromium kiosk mode, controlled entirely from a clean browser interface on any device in the network. A built-in AirPlay receiver (UxPlay) lets anyone mirror an iPhone, iPad or Mac to the display for ad-hoc presentations.
 
+Raspberry Pi · Digital Signage · Kiosk Mode · Multi Monitor · AirPlay · Web Dashboard · Selfhosted
+
 ---
 
 ## Features
