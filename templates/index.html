@@ -44,6 +44,7 @@
       <button class="tab" data-tab="presentation" data-i18n="tabs.presentation">Presentation</button>
       <button class="tab" data-tab="wifi" data-i18n="tabs.wifi">Wi-Fi</button>
       <button class="tab" data-tab="system" data-i18n="tabs.system">System</button>
+      <button class="tab" data-tab="diagnostics" data-i18n="tabs.diagnostics">Diagnostics</button>
       <button class="tab" data-tab="settings" data-i18n="tabs.settings">Settings</button>
     </nav>
   </div>
@@ -124,6 +125,7 @@
         </table>
       </div>
       <p class="muted" data-i18n="screens.sorted">Sorted by X position from left to right.</p>
+      <p class="muted" data-i18n="screens.hotplug_hint">For two-screen installations, assign each page to a fixed HDMI output so an unplugged display cannot take over the other page.</p>
     </div>
 
     <div class="card">
@@ -224,6 +226,38 @@
     <div class="card">
       <h2 data-i18n="system.processes">Running processes</h2>
       <pre id="status" data-i18n="common.loading">Loading...</pre>
+    </div>
+  </section>
+
+  <!-- DIAGNOSTICS -->
+  <section class="tab-content" id="tab-diagnostics">
+    <div class="card">
+      <div class="flex-between">
+        <h2 data-i18n="diag.title">Display diagnosis</h2>
+        <button id="diagnostics-refresh" class="btn primary"
+                data-i18n="diag.run">Run analysis now</button>
+      </div>
+      <p class="muted" data-i18n="diag.desc">Run this while a page is missing. It captures the detected displays, Chromium windows, and the latest kiosk log entries.</p>
+      <p class="muted"><span data-i18n="diag.captured">Captured:</span>
+        <b id="diagnostics-time">-</b>
+      </p>
+      <div id="diagnostics-assignments" class="table-wrap" data-i18n="common.loading">Loading...</div>
+    </div>
+
+    <div class="diagnostic-grid">
+      <div class="card">
+        <h2><code>xrandr --query</code></h2>
+        <pre id="diagnostics-xrandr" data-i18n="common.loading">Loading...</pre>
+      </div>
+      <div class="card">
+        <h2><code>pgrep -af chromium</code></h2>
+        <pre id="diagnostics-chromium" data-i18n="common.loading">Loading...</pre>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2><code>tail -n 100 ~/PiScreenPortal/kiosk.log</code></h2>
+      <pre id="diagnostics-log" class="diagnostics-log" data-i18n="common.loading">Loading...</pre>
     </div>
   </section>
 

@@ -292,6 +292,9 @@ def logs_for_language(text: str, lang: str) -> str:
          "Chromium not found - sudo apt install chromium-browser"),
         ("Stop-Fehler", "Stop error"),
         ("Erkannte Monitore:", "Detected monitors:"),
+        ("Monitor-Layout geändert:", "Monitor layout changed:"),
+        ("Kiosk-Fenster werden neu zugeordnet.",
+         "Kiosk windows are being reassigned."),
         ("Respawn Bildschirm", "Respawn screen"),
         ("Konnte SECRET_KEY nicht speichern:",
          "Could not save SECRET_KEY:"),
@@ -355,7 +358,7 @@ def detect_monitors() -> list:
                     pass
             monitors.append({"name": name, "primary": primary,
                              "x": x, "y": y, "width": w, "height": h,
-                             "geometry": geom})
+                             "geometry": geom, "active": bool(geom)})
     monitors.sort(key=lambda m: m["x"])
     return monitors
 
@@ -1786,8 +1789,10 @@ class KioskManager:
         self.reload_threads = {}  # idx -> (thread, stop_event)
         self.unclutter_proc = None
         self.lock = threading.Lock()
+        self.apply_lock = threading.RLock()
         self._watcher_started = False
         self._desired_running = False
+        self._last_monitor_layout = None
 
     def _start_unclutter(self) -> None:
         if self.unclutter_proc and self.unclutter_proc.poll() is None:
@@ -1840,13 +1845,32 @@ class KioskManager:
             log(f"Rotate-Fehler {output}: {e}")
 
     def _pick_output(self, screen: dict, monitors: list, idx: int):
-        if not monitors:
+        active = [m for m in monitors
+                  if m.get("active", bool(m.get("geometry")))
+                  and m.get("width", 0) > 0 and m.get("height", 0) > 0]
+        if not active:
             return None
         if screen.get("output"):
-            for m in monitors:
+            for m in active:
                 if m["name"] == screen["output"]:
                     return m
-        return monitors[idx] if idx < len(monitors) else monitors[0]
+            return None
+        return active[idx] if idx < len(active) else None
+
+    @staticmethod
+    def _layout_signature(monitors: list) -> tuple:
+        return tuple((m["name"], m.get("active", False), m.get("geometry", ""),
+                      m.get("x", 0), m.get("y", 0),
+                      m.get("width", 0), m.get("height", 0))
+                     for m in monitors)
+
+    @staticmethod
+    def _layout_description(monitors: list) -> str:
+        if not monitors:
+            return "keine verbundenen Ausgänge"
+        return ", ".join(
+            f"{m['name']}={m.get('geometry') or 'connected-ohne-mode'}"
+            for m in monitors)
 
     def _profile_dir(self, idx: int) -> str:
         d = BASE_DIR / f"chromium-profile-{idx}"
@@ -1933,43 +1957,46 @@ class KioskManager:
                 log(f"Stop-Fehler {idx}: {e}")
 
     def stop_all(self, keep_desired: bool = False):
-        if not keep_desired:
-            with self.lock:
-                self._desired_running = False
-        for idx in list(self.processes.keys()):
-            self.stop_screen(idx)
-        subprocess.call(["pkill", "-f", "chromium"], env=self._env())
-        self._stop_unclutter()
+        with self.apply_lock:
+            if not keep_desired:
+                with self.lock:
+                    self._desired_running = False
+            for idx in list(self.processes.keys()):
+                self.stop_screen(idx)
+            subprocess.call(["pkill", "-f", "chromium"], env=self._env())
+            self._stop_unclutter()
 
     def start_all(self, cfg: dict | None = None):
-        cfg = cfg or load_config()
-        with self.lock:
-            self._desired_running = True
-        monitors = detect_monitors()
-        log(f"Erkannte Monitore: {[m['name'] for m in monitors]}")
-        # Zuerst alte Prozesse aufräumen, die zu entfernten/deaktivierten
-        # Screens gehören (sonst bleiben Zombie-Einträge in self.processes,
-        # wenn der User z.B. 3 Screens auf 2 reduziert).
-        valid_indices = {i for i, s in enumerate(cfg["screens"])
-                         if s.get("enabled", True)}
-        with self.lock:
-            stale = [i for i in self.processes.keys() if i not in valid_indices]
-        for idx in stale:
-            self.stop_screen(idx)
-        # Mauszeiger ausblenden, wenn mind. ein Screen es verlangt
-        if any(s.get("hide_cursor") and s.get("enabled") for s in cfg["screens"]):
-            self._start_unclutter()
-        else:
-            self._stop_unclutter()
-        for idx, screen in enumerate(cfg["screens"]):
-            mon = self._pick_output(screen, monitors, idx)
-            self.start_screen(idx, screen, mon, cfg.get("chromium_flags", []))
-        self._ensure_watcher()
+        with self.apply_lock:
+            cfg = cfg or load_config()
+            with self.lock:
+                self._desired_running = True
+            monitors = detect_monitors()
+            with self.lock:
+                self._last_monitor_layout = self._layout_signature(monitors)
+            log(f"Erkannte Monitore: {self._layout_description(monitors)}")
+            # Zuerst alte Prozesse aufraeumen, die zu entfernten/deaktivierten
+            # Screens gehoeren.
+            valid_indices = {i for i, s in enumerate(cfg["screens"])
+                             if s.get("enabled", True)}
+            with self.lock:
+                stale = [i for i in self.processes.keys() if i not in valid_indices]
+            for idx in stale:
+                self.stop_screen(idx)
+            if any(s.get("hide_cursor") and s.get("enabled") for s in cfg["screens"]):
+                self._start_unclutter()
+            else:
+                self._stop_unclutter()
+            for idx, screen in enumerate(cfg["screens"]):
+                mon = self._pick_output(screen, monitors, idx)
+                self.start_screen(idx, screen, mon, cfg.get("chromium_flags", []))
+            self._ensure_watcher()
 
     def restart_all(self):
-        self.stop_all(keep_desired=True)
-        time.sleep(1)
-        self.start_all()
+        with self.apply_lock:
+            self.stop_all(keep_desired=True)
+            time.sleep(1)
+            self.start_all()
 
     def status(self) -> dict:
         out = {}
@@ -1987,20 +2014,33 @@ class KioskManager:
             while True:
                 time.sleep(5)
                 c = load_config()
-                if not c.get("restart_on_crash"):
-                    continue
                 with self.lock:
                     desired = self._desired_running
                 if not desired:
                     continue
                 monitors = detect_monitors()
+                layout = self._layout_signature(monitors)
+                with self.lock:
+                    previous_layout = self._last_monitor_layout
+                if previous_layout is not None and layout != previous_layout:
+                    log("Monitor-Layout geändert: "
+                        f"{self._layout_description(monitors)}. "
+                        "Kiosk-Fenster werden neu zugeordnet.")
+                    self.start_all(c)
+                    continue
+                with self.lock:
+                    self._last_monitor_layout = layout
+                if not c.get("restart_on_crash"):
+                    continue
                 for idx, screen in enumerate(c["screens"]):
                     with self.lock:
                         p = self.processes.get(idx)
                     if screen.get("enabled") and (p is None or p.poll() is not None):
                         log(f"Respawn Bildschirm {idx}")
                         mon = self._pick_output(screen, monitors, idx)
-                        self.start_screen(idx, screen, mon, c.get("chromium_flags", []))
+                        with self.apply_lock:
+                            self.start_screen(idx, screen, mon,
+                                              c.get("chromium_flags", []))
 
         threading.Thread(target=watch, daemon=True).start()
 
@@ -2285,6 +2325,59 @@ def api_status():
         "processes": manager.status(),
         "monitors": detect_monitors(),
         "system": system_info(),
+    })
+
+
+def _diagnostic_command_output(cmd: list[str], env: dict | None = None) -> str:
+    try:
+        result = subprocess.run(cmd, env=env, capture_output=True, text=True,
+                                timeout=8)
+        output = (result.stdout + result.stderr).strip()
+        if output:
+            return output
+        if cmd[0] == "pgrep" and result.returncode == 1:
+            return "(no Chromium processes found)"
+        return f"(no output, exit code {result.returncode})"
+    except FileNotFoundError:
+        return f"({cmd[0]} is not installed on this system)"
+    except subprocess.TimeoutExpired:
+        return f"({cmd[0]} timed out)"
+    except Exception as e:
+        return f"({cmd[0]} failed: {e})"
+
+
+def _diagnostic_log_tail(lines: int = 100) -> str:
+    if not LOG_FILE.exists():
+        return "(kiosk.log does not exist yet)"
+    try:
+        content = LOG_FILE.read_text(encoding="utf-8", errors="replace")
+        return "\n".join(content.splitlines()[-lines:]) or "(empty)"
+    except OSError as e:
+        return f"(could not read kiosk.log: {e})"
+
+
+@app.route("/api/diagnostics")
+@requires_auth
+def api_diagnostics():
+    cfg = load_config()
+    monitors = detect_monitors()
+    assignments = []
+    for idx, screen in enumerate(cfg.get("screens", [])):
+        target = manager._pick_output(screen, monitors, idx)
+        assignments.append({
+            "screen": screen.get("name") or f"Screen {idx + 1}",
+            "configured_output": screen.get("output") or "",
+            "assigned_output": target.get("name") if target else "",
+            "running": manager.status().get(str(idx), {}).get("running", False),
+        })
+    return jsonify({
+        "captured_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "monitors": monitors,
+        "assignments": assignments,
+        "xrandr": _diagnostic_command_output(["xrandr", "--query"],
+                                             env=self_env()),
+        "chromium": _diagnostic_command_output(["pgrep", "-af", "chromium"]),
+        "log": _diagnostic_log_tail(),
     })
 
 

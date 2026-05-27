@@ -30,6 +30,7 @@ function activateTab(name) {
 
   if (name === "wifi") loadWifi();
   if (name === "presentation") loadPresentation();
+  if (name === "diagnostics") loadDiagnostics();
   if (name === "settings") onSettingsOpen();
 }
 
@@ -48,6 +49,9 @@ document.addEventListener("i18n-applied", () => {
   loadPower();
   loadMaintenanceStatus();
   loadSystemUpdateStatus();
+  if (document.getElementById("tab-diagnostics").classList.contains("active")) {
+    loadDiagnostics();
+  }
 });
 
 // ---------- Laden ----------
@@ -636,6 +640,58 @@ async function refreshStatus() {
     l.scrollTop = l.scrollHeight;
   } catch(e) {}
 }
+
+// ---------- Display diagnosis ----------
+function renderDiagnosticAssignments(assignments) {
+  const el = document.getElementById("diagnostics-assignments");
+  if (!assignments || !assignments.length) {
+    el.innerHTML = `<p class="muted">${t("common.none")}</p>`;
+    return;
+  }
+  const rows = assignments.map(a => {
+    const configured = a.configured_output || t("screens.auto");
+    return `
+    <tr>
+      <td>${escape(a.screen || "-")}</td>
+      <td><code>${escape(configured)}</code></td>
+      <td>${a.assigned_output ? `<code>${escape(a.assigned_output)}</code>` : t("diag.unassigned")}</td>
+      <td>${a.running ? t("common.yes") : t("common.no")}</td>
+    </tr>`;
+  }).join("");
+  el.innerHTML = `
+    <h3>${t("diag.assignments")}</h3>
+    <table>
+      <thead><tr>
+        <th>${t("diag.page")}</th>
+        <th>${t("diag.configured")}</th>
+        <th>${t("diag.assigned")}</th>
+        <th>${t("diag.running")}</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+async function loadDiagnostics() {
+  const btn = document.getElementById("diagnostics-refresh");
+  btn.disabled = true;
+  try {
+    const data = await fetch("/api/diagnostics").then(r => r.json());
+    document.getElementById("diagnostics-time").textContent = data.captured_at || "-";
+    renderDiagnosticAssignments(data.assignments || []);
+    document.getElementById("diagnostics-xrandr").textContent = data.xrandr || t("system.log_empty");
+    document.getElementById("diagnostics-chromium").textContent = data.chromium || t("system.log_empty");
+    const log = document.getElementById("diagnostics-log");
+    log.textContent = data.log || t("system.log_empty");
+    log.scrollTop = log.scrollHeight;
+  } catch (e) {
+    document.getElementById("diagnostics-assignments").textContent =
+      t("common.error") + ": " + e;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.getElementById("diagnostics-refresh").addEventListener("click", loadDiagnostics);
 
 // ---------- WLAN ----------
 async function loadWifi() {

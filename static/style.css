@@ -358,6 +358,11 @@ main {
 }
 .tab-content { display: none; grid-template-columns: 1fr; gap: 16px; }
 .tab-content.active { display: grid; }
+.diagnostic-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
 .grid-2 {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -366,6 +371,7 @@ main {
 .compact-grid { align-items: start; }
 @media (max-width: 800px) {
   .grid-2 { grid-template-columns: 1fr; }
+  .diagnostic-grid { grid-template-columns: 1fr; }
   .header-top {
     grid-template-columns: 1fr;
     justify-items: center;
@@ -626,6 +632,7 @@ pre {
   border: 1px solid var(--border);
   margin: 0;
 }
+.diagnostics-log { max-height: 520px; }
 
 /* ------ Save bar ------ */
 .save-bar {
