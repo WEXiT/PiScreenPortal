@@ -326,6 +326,20 @@ def logs_for_language(text: str, lang: str) -> str:
 
 # ---------------------- Monitor-Erkennung ---------------------- #
 XRANDR_GEOMETRY_RE = re.compile(r"\b(\d+)x(\d+)\+(-?\d+)\+(-?\d+)\b")
+VIRTUAL_OUTPUT_PREFIXES = (
+    "lease-",
+    "virtual",
+    "dummy",
+    "headless",
+    "xvfb",
+)
+
+
+def is_physical_output_name(name: str) -> bool:
+    output = str(name or "").strip().lower()
+    if not output:
+        return False
+    return not output.startswith(VIRTUAL_OUTPUT_PREFIXES)
 
 
 def parse_xrandr_monitors(output: str) -> list:
@@ -335,7 +349,7 @@ def parse_xrandr_monitors(output: str) -> list:
         if len(parts) < 2 or parts[1] != "connected":
             continue
         name = parts[0]
-        if name.startswith("lease-"):
+        if not is_physical_output_name(name):
             continue
         match = XRANDR_GEOMETRY_RE.search(line)
         if not match:
@@ -1849,6 +1863,7 @@ class KioskManager:
     def _active_monitors(self, monitors: list) -> list:
         return [m for m in monitors
                 if m.get("active", bool(m.get("geometry")))
+                and is_physical_output_name(m.get("name", ""))
                 and m.get("width", 0) > 0 and m.get("height", 0) > 0]
 
     def _sync_output_bindings(self, screens: list) -> None:
