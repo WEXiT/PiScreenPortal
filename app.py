@@ -1120,6 +1120,24 @@ class MaintenanceManager:
         except Exception:
             return ""
 
+    def _stash_local_git_changes(self, env: dict, outputs: list[str]) -> tuple[bool, bool, str, str]:
+        status_cmd = ["git", "status", "--porcelain"]
+        ok, status = self._run_git(status_cmd, env=env, timeout=30)
+        outputs.append(f"$ {' '.join(status_cmd)}\n{status}".strip())
+        if not ok:
+            return False, False, "", status
+        if not status.strip():
+            return True, False, "", ""
+
+        message = f"PiScreenPortal auto-stash before update {time.strftime('%Y-%m-%d %H:%M:%S')}"
+        stash_cmd = ["git", "stash", "push", "--include-untracked", "-m", message]
+        ok, out = self._run_git(stash_cmd, env=env, timeout=60)
+        outputs.append(f"$ {' '.join(stash_cmd)}\n{out}".strip())
+        if not ok:
+            return False, False, "", out
+        stash_ref = self._git_text(["rev-parse", "--verify", "stash@{0}"], timeout=10)
+        return True, True, stash_ref or "stash@{0}", ""
+
     def update_from_git_and_reboot(self) -> dict:
         if not shutil.which("git"):
             return {"ok": False, "error": "git ist nicht installiert."}
@@ -1137,7 +1155,6 @@ class MaintenanceManager:
             cmds = [
                 self._origin_setup_cmd(),
                 ["git", "fetch", "--prune", "origin", "main"],
-                ["git", "pull", "--ff-only", "origin", "main"],
             ]
             outputs = []
             for cmd in cmds:
@@ -1147,9 +1164,40 @@ class MaintenanceManager:
                     log(f"Git-Update fehlgeschlagen: {out}")
                     return {"ok": False, "error": out, "output": "\n\n".join(outputs)}
 
+            ok, local_changes_stashed, stash_ref, stash_error = (
+                self._stash_local_git_changes(env, outputs)
+            )
+            if not ok:
+                log(f"Git-Update fehlgeschlagen: {stash_error}")
+                return {"ok": False, "error": stash_error,
+                        "output": "\n\n".join(outputs)}
+
+            pull_cmd = ["git", "pull", "--ff-only", "origin", "main"]
+            ok, out = self._run_git(pull_cmd, env=env, timeout=120)
+            outputs.append(f"$ {' '.join(pull_cmd)}\n{out}".strip())
+            if not ok:
+                if local_changes_stashed:
+                    restore_cmd = ["git", "stash", "pop"]
+                    restore_ok, restore_out = self._run_git(
+                        restore_cmd, env=env, timeout=60)
+                    outputs.append(
+                        f"$ {' '.join(restore_cmd)}\n{restore_out}".strip())
+                    if not restore_ok:
+                        out = (
+                            f"{out}\n\nLokale Aenderungen wurden gesichert "
+                            f"({stash_ref}), konnten aber nicht automatisch "
+                            "wiederhergestellt werden."
+                        )
+                log(f"Git-Update fehlgeschlagen: {out}")
+                return {"ok": False, "error": out, "output": "\n\n".join(outputs),
+                        "local_changes_stashed": local_changes_stashed,
+                        "stash_ref": stash_ref}
+
             after = self._git_text(["rev-parse", "--short", "HEAD"])
             after_version = self.current_version()
             log(f"Git-Update erfolgreich ({before} -> {after}), Reboot geplant")
+            if local_changes_stashed:
+                log(f"Lokale Git-Aenderungen vor Update gesichert: {stash_ref}")
             self._reboot_later("git-update", delay=3)
             return {
                 "ok": True,
@@ -1160,6 +1208,8 @@ class MaintenanceManager:
                 "changed": before != after,
                 "output": "\n\n".join(outputs),
                 "reboot_scheduled": True,
+                "local_changes_stashed": local_changes_stashed,
+                "stash_ref": stash_ref,
             }
         except subprocess.TimeoutExpired:
             return {"ok": False, "error": "Git-Update hat zu lange gedauert."}

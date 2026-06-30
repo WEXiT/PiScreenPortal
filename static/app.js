@@ -433,9 +433,13 @@ document.getElementById("git-update").addEventListener("click", async () => {
     const r = await fetch("/api/maintenance/update", {method: "POST"});
     const j = await r.json();
     if (j.ok) {
-      msg.textContent = j.changed
+      let text = j.changed
         ? t("maint.update_ok_changed")
         : t("maint.update_ok_current");
+      if (j.local_changes_stashed) {
+        text += " " + t("maint.local_changes_stashed");
+      }
+      msg.textContent = text;
     } else {
       msg.classList.add("error");
       msg.textContent = t("maint.update_failed") + " " +

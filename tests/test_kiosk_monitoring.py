@@ -45,7 +45,7 @@ except ModuleNotFoundError:
     sys.modules["flask"] = flask_stub
 
 import app as app_module
-from app import KioskManager, parse_xrandr_monitors
+from app import KioskManager, MaintenanceManager, parse_xrandr_monitors
 
 
 XRANDR_SAMPLE = """
@@ -400,6 +400,53 @@ class OutputAssignmentTests(unittest.TestCase):
 
 
 class ReloadTests(unittest.TestCase):
+    def test_git_update_stashes_local_changes_before_pull(self):
+        original_which = app_module.shutil.which
+        commands = []
+        head = {"value": "12968f4"}
+
+        manager = MaintenanceManager()
+
+        def fake_git_text(args, timeout=10):
+            if args == ["remote", "get-url", "origin"]:
+                return "https://github.com/WEXiT/PiScreenPortal.git"
+            if args == ["rev-parse", "--short", "HEAD"]:
+                return head["value"]
+            if args == ["rev-parse", "--verify", "stash@{0}"]:
+                return "stashhash"
+            return ""
+
+        def fake_run_git(cmd, env=None, timeout=60):
+            commands.append(cmd)
+            if cmd[:3] == ["git", "status", "--porcelain"]:
+                return True, " M install.sh"
+            if cmd[:3] == ["git", "stash", "push"]:
+                return True, "Saved working directory and index state"
+            if cmd[:2] == ["git", "pull"]:
+                head["value"] = "a246407"
+                return True, "Updating 12968f4..a246407"
+            return True, ""
+
+        try:
+            app_module.shutil.which = lambda name: "/usr/bin/git"
+            manager._git_text = fake_git_text
+            manager._run_git = fake_run_git
+            manager._reboot_later = lambda *args, **kwargs: None
+
+            result = manager.update_from_git_and_reboot()
+        finally:
+            app_module.shutil.which = original_which
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["local_changes_stashed"])
+        self.assertEqual(result["stash_ref"], "stashhash")
+        self.assertIn(["git", "status", "--porcelain"], commands)
+        self.assertTrue(any(cmd[:3] == ["git", "stash", "push"]
+                            for cmd in commands))
+        self.assertTrue(any(cmd[:2] == ["git", "pull"] for cmd in commands))
+        self.assertFalse(any(cmd[:3] == ["git", "stash", "pop"]
+                             for cmd in commands))
+
     def test_start_screen_uses_managed_window_flags(self):
         original_popen = app_module.subprocess.Popen
         captured = []
