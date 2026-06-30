@@ -400,6 +400,51 @@ class OutputAssignmentTests(unittest.TestCase):
 
 
 class ReloadTests(unittest.TestCase):
+    def test_start_screen_uses_managed_window_flags(self):
+        original_popen = app_module.subprocess.Popen
+        captured = []
+
+        class FakeProcess:
+            pid = 1234
+
+            def poll(self):
+                return None
+
+        class RecordingManager(KioskManager):
+            def _chromium_bin(self):
+                return "chromium"
+
+            def _profile_dir(self, idx):
+                return f"profile-{idx}"
+
+            def _env(self):
+                return {}
+
+        def fake_popen(cmd, **kwargs):
+            captured.append(cmd)
+            return FakeProcess()
+
+        try:
+            app_module.subprocess.Popen = fake_popen
+            manager = RecordingManager()
+            manager.start_screen(
+                0,
+                {"name": "Links", "enabled": True, "url": "http://left",
+                 "zoom": 1, "reload_interval": 0},
+                {"name": "HDMI-A-1", "x": 0, "y": 0,
+                 "width": 1920, "height": 1080},
+                ["--new-tab", "--window-position=99,99",
+                 "--disable-gpu"],
+            )
+        finally:
+            app_module.subprocess.Popen = original_popen
+
+        self.assertIn("--new-window", captured[0])
+        self.assertNotIn("--new-tab", captured[0])
+        self.assertNotIn("--window-position=99,99", captured[0])
+        self.assertIn("--window-position=0,0", captured[0])
+        self.assertIn("--disable-gpu", captured[0])
+
     def test_reload_targets_only_kiosk_profile_windows(self):
         original_which = app_module.shutil.which
         original_window_ids = app_module._chromium_window_ids
@@ -437,6 +482,36 @@ class ReloadTests(unittest.TestCase):
 
 
 class WatcherTests(unittest.TestCase):
+    def test_watch_tick_does_not_respawn_two_screens_on_same_explicit_output(self):
+        class RecordingManager(KioskManager):
+            def __init__(self):
+                super().__init__()
+                self.started = []
+
+            def start_screen(self, idx, screen, monitor, flags):
+                self.started.append((idx, monitor))
+
+        manager = RecordingManager()
+        monitors = parse_xrandr_monitors(XRANDR_SAMPLE)
+        cfg = {
+            "restart_on_crash": True,
+            "screens": [
+                {"name": "Links", "enabled": True, "output": "HDMI-A-1",
+                 "hide_cursor": False, "url": "http://left"},
+                {"name": "New screen", "enabled": True, "output": "HDMI-A-1",
+                 "hide_cursor": False, "url": "http://right"},
+            ],
+            "chromium_flags": [],
+        }
+        with manager.lock:
+            manager._desired_running = True
+            manager._last_monitor_layout = manager._layout_signature(monitors)
+
+        manager._watch_tick(cfg, monitors)
+
+        self.assertEqual(manager.started[0][1]["name"], "HDMI-A-1")
+        self.assertIsNone(manager.started[1][1])
+
     def test_watch_tick_respawns_under_apply_lock(self):
         class RecordingLock:
             def __init__(self):

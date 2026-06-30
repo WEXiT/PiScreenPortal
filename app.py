@@ -129,7 +129,17 @@ REQUIRED_FLAGS = [
 FLAG_PREFIXES_SINGLE = (
     "--password-store=",
     "--user-data-dir=",
+    "--app=",
+    "--window-position=",
+    "--window-size=",
 )
+MANAGED_CHROMIUM_FLAGS = {
+    "--kiosk",
+    "--new-window",
+    "--new-tab",
+    "--start-fullscreen",
+    "--start-maximized",
+}
 
 
 def _clone_default(value):
@@ -189,6 +199,8 @@ def normalize_chromium_flags(flags) -> list[str]:
     for flag in src:
         flag = str(flag or "").strip()
         if not flag:
+            continue
+        if flag in MANAGED_CHROMIUM_FLAGS:
             continue
         if any(flag.startswith(prefix) for prefix in FLAG_PREFIXES_SINGLE):
             continue
@@ -2044,8 +2056,7 @@ class KioskManager:
             f"--app={screen['url']}",
             f"--force-device-scale-factor={screen.get('zoom', 1.0)}",
         ]
-        raw_flags = flags if isinstance(flags, list) else []
-        cmd.extend([str(flag) for flag in raw_flags if str(flag).strip()])
+        cmd.extend(normalize_chromium_flags(flags))
 
         log(f"Starte Bildschirm {idx} ({screen.get('name')}) auf {monitor['name']}: {screen['url']}")
         try:
@@ -2172,13 +2183,19 @@ class KioskManager:
             enabled_count = sum(1 for s in c["screens"]
                                 if s.get("enabled", True))
             allow_new_auto = len(active_monitors) >= enabled_count
+            reserved_outputs = set()
             for idx, screen in enumerate(c["screens"]):
+                if not screen.get("enabled"):
+                    continue
                 with self.lock:
                     p = self.processes.get(idx)
-                if screen.get("enabled") and (p is None or p.poll() is not None):
+                mon = self._pick_output(screen, monitors, idx,
+                                        allow_new_auto=allow_new_auto,
+                                        reserved_outputs=reserved_outputs)
+                if mon:
+                    reserved_outputs.add(mon["name"])
+                if p is None or p.poll() is not None:
                     log(f"Respawn Bildschirm {idx}")
-                    mon = self._pick_output(screen, monitors, idx,
-                                            allow_new_auto=allow_new_auto)
                     self.start_screen(idx, screen, mon,
                                       c.get("chromium_flags", []))
 
@@ -2513,9 +2530,13 @@ def api_diagnostics():
     monitors = detect_monitors()
     status = manager.status()
     assignments = []
+    reserved_outputs = set()
     for idx, screen in enumerate(cfg.get("screens", [])):
         target = manager._pick_output(screen, monitors, idx,
-                                      allow_new_auto=False)
+                                      allow_new_auto=False,
+                                      reserved_outputs=reserved_outputs)
+        if target:
+            reserved_outputs.add(target["name"])
         running = status.get(str(idx), {}).get("running", False)
         assigned_output = target.get("name") if target else ""
         assignments.append({
