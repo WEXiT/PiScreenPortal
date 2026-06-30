@@ -325,6 +325,30 @@ def logs_for_language(text: str, lang: str) -> str:
 
 
 # ---------------------- Monitor-Erkennung ---------------------- #
+XRANDR_GEOMETRY_RE = re.compile(r"\b(\d+)x(\d+)\+(-?\d+)\+(-?\d+)\b")
+
+
+def parse_xrandr_monitors(output: str) -> list:
+    monitors = []
+    for line in (output or "").splitlines():
+        parts = line.split()
+        if len(parts) < 2 or parts[1] != "connected":
+            continue
+        name = parts[0]
+        if name.startswith("lease-"):
+            continue
+        match = XRANDR_GEOMETRY_RE.search(line)
+        if not match:
+            continue
+        w, h, x, y = map(int, match.groups())
+        geometry = match.group(0)
+        monitors.append({"name": name, "primary": "primary" in parts,
+                         "x": x, "y": y, "width": w, "height": h,
+                         "geometry": geometry, "active": True})
+    monitors.sort(key=lambda m: m["x"])
+    return monitors
+
+
 def detect_monitors() -> list:
     env = os.environ.copy()
     env.setdefault("DISPLAY", ":0")
@@ -337,30 +361,7 @@ def detect_monitors() -> list:
         log(f"xrandr fehlgeschlagen: {e}")
         return []
 
-    monitors = []
-    for line in out.splitlines():
-        if " connected" in line:
-            parts = line.split()
-            name = parts[0]
-            primary = "primary" in parts
-            geom = ""
-            for p in parts:
-                if "x" in p and "+" in p and p[0].isdigit():
-                    geom = p
-                    break
-            w = h = x = y = 0
-            if geom:
-                try:
-                    wh, xs, ys = geom.split("+")
-                    w, h = map(int, wh.split("x"))
-                    x, y = int(xs), int(ys)
-                except Exception:
-                    pass
-            monitors.append({"name": name, "primary": primary,
-                             "x": x, "y": y, "width": w, "height": h,
-                             "geometry": geom, "active": bool(geom)})
-    monitors.sort(key=lambda m: m["x"])
-    return monitors
+    return parse_xrandr_monitors(out)
 
 
 # ---------------------- System-Info ---------------------- #
@@ -1793,6 +1794,7 @@ class KioskManager:
         self._watcher_started = False
         self._desired_running = False
         self._last_monitor_layout = None
+        self.output_bindings = {}
 
     def _start_unclutter(self) -> None:
         if self.unclutter_proc and self.unclutter_proc.poll() is None:
@@ -1844,18 +1846,68 @@ class KioskManager:
         except Exception as e:
             log(f"Rotate-Fehler {output}: {e}")
 
-    def _pick_output(self, screen: dict, monitors: list, idx: int):
-        active = [m for m in monitors
-                  if m.get("active", bool(m.get("geometry")))
-                  and m.get("width", 0) > 0 and m.get("height", 0) > 0]
+    def _active_monitors(self, monitors: list) -> list:
+        return [m for m in monitors
+                if m.get("active", bool(m.get("geometry")))
+                and m.get("width", 0) > 0 and m.get("height", 0) > 0]
+
+    def _sync_output_bindings(self, screens: list) -> None:
+        with self.lock:
+            valid_indices = set(range(len(screens)))
+            for idx in list(self.output_bindings.keys()):
+                if idx not in valid_indices:
+                    self.output_bindings.pop(idx, None)
+            for idx, screen in enumerate(screens):
+                configured_output = str(screen.get("output") or "").strip()
+                if configured_output:
+                    self.output_bindings[idx] = configured_output
+                else:
+                    self.output_bindings.pop(idx, None)
+
+    def _pick_output(self, screen: dict, monitors: list, idx: int,
+                     allow_new_auto: bool = True,
+                     reserved_outputs: set | None = None):
+        active = self._active_monitors(monitors)
+        avoid_reserved = reserved_outputs is not None
+        reserved_outputs = reserved_outputs or set()
         if not active:
             return None
-        if screen.get("output"):
+        configured_output = str(screen.get("output") or "").strip()
+        if configured_output:
             for m in active:
-                if m["name"] == screen["output"]:
+                if m["name"] == configured_output and m["name"] not in reserved_outputs:
+                    with self.lock:
+                        self.output_bindings[idx] = configured_output
                     return m
             return None
-        return active[idx] if idx < len(active) else None
+        with self.lock:
+            bound_output = self.output_bindings.get(idx)
+        if bound_output:
+            for m in active:
+                if m["name"] == bound_output and m["name"] not in reserved_outputs:
+                    return m
+            return None
+        if not allow_new_auto:
+            return None
+        if avoid_reserved:
+            if idx < len(active) and active[idx]["name"] not in reserved_outputs:
+                selected = active[idx]
+                with self.lock:
+                    self.output_bindings[idx] = selected["name"]
+                return selected
+            for selected in active:
+                if selected["name"] in reserved_outputs:
+                    continue
+                with self.lock:
+                    self.output_bindings[idx] = selected["name"]
+                return selected
+            return None
+        if idx < len(active):
+            selected = active[idx]
+            with self.lock:
+                self.output_bindings[idx] = selected["name"]
+            return selected
+        return None
 
     @staticmethod
     def _layout_signature(monitors: list) -> tuple:
@@ -1876,6 +1928,54 @@ class KioskManager:
         d = BASE_DIR / f"chromium-profile-{idx}"
         d.mkdir(exist_ok=True)
         return str(d)
+
+    @staticmethod
+    def _profile_marker(idx: int) -> str:
+        return f"chromium-profile-{idx}"
+
+    def _profile_process_lines(self, idx: int) -> list[str]:
+        if not shutil.which("pgrep"):
+            return []
+        marker = self._profile_marker(idx)
+        browser_re = re.compile(
+            r"(^|[\\/ ])(chromium|chromium-browser|google-chrome|"
+            r"chrome_crashpad_handler)([\\/ ]|$)"
+        )
+        try:
+            r = subprocess.run(["pgrep", "-af", marker],
+                               env=self._env(), capture_output=True, timeout=5)
+        except Exception:
+            return []
+        if r.returncode not in (0, 1):
+            return []
+        lines = r.stdout.decode("utf-8", "ignore").splitlines()
+        matches = []
+        for line in lines:
+            try:
+                command = line.split(maxsplit=1)[1]
+            except IndexError:
+                continue
+            if marker in command and browser_re.search(command):
+                matches.append(line)
+        return matches
+
+    def _terminate_profile_processes(self, idx: int) -> None:
+        marker = self._profile_marker(idx)
+        if not shutil.which("pkill"):
+            return
+        try:
+            subprocess.run(["pkill", "-TERM", "-f", marker],
+                           env=self._env(), stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=5)
+            for _ in range(10):
+                if not self._profile_process_lines(idx):
+                    return
+                time.sleep(0.2)
+            subprocess.run(["pkill", "-KILL", "-f", marker],
+                           env=self._env(), stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=5)
+        except Exception as e:
+            log(f"Profil-Stop-Fehler {idx}: {e}")
 
     def _chromium_bin(self) -> str:
         for c in ("chromium-browser", "chromium", "google-chrome"):
@@ -1922,6 +2022,7 @@ class KioskManager:
         cmd = [
             self._chromium_bin(),
             "--kiosk",
+            "--new-window",
             f"--user-data-dir={self._profile_dir(idx)}",
             f"--window-position={monitor['x']},{monitor['y']}",
             f"--window-size={monitor['width']},{monitor['height']}",
@@ -1955,6 +2056,7 @@ class KioskManager:
                     p.kill()
             except Exception as e:
                 log(f"Stop-Fehler {idx}: {e}")
+        self._terminate_profile_processes(idx)
 
     def stop_all(self, keep_desired: bool = False):
         with self.apply_lock:
@@ -1969,6 +2071,7 @@ class KioskManager:
     def start_all(self, cfg: dict | None = None):
         with self.apply_lock:
             cfg = cfg or load_config()
+            self._sync_output_bindings(cfg["screens"])
             with self.lock:
                 self._desired_running = True
             monitors = detect_monitors()
@@ -1987,9 +2090,29 @@ class KioskManager:
                 self._start_unclutter()
             else:
                 self._stop_unclutter()
+            active_monitors = self._active_monitors(monitors)
+            enabled_count = sum(1 for s in cfg["screens"]
+                                if s.get("enabled", True))
+            allow_new_auto = len(active_monitors) >= enabled_count
+            config_changed = False
+            reserved_outputs = set()
             for idx, screen in enumerate(cfg["screens"]):
-                mon = self._pick_output(screen, monitors, idx)
+                if not screen.get("enabled", True):
+                    self.stop_screen(idx)
+                    continue
+                mon = self._pick_output(screen, monitors, idx,
+                                        allow_new_auto=allow_new_auto,
+                                        reserved_outputs=reserved_outputs)
+                if mon:
+                    reserved_outputs.add(mon["name"])
+                if mon and not str(screen.get("output") or "").strip():
+                    screen["output"] = mon["name"]
+                    config_changed = True
+                    log(f"Bildschirm {idx} ({screen.get('name')}) an "
+                        f"{mon['name']} gebunden")
                 self.start_screen(idx, screen, mon, cfg.get("chromium_flags", []))
+            if config_changed:
+                save_config(cfg)
             self._ensure_watcher()
 
     def restart_all(self):
@@ -2001,8 +2124,11 @@ class KioskManager:
     def status(self) -> dict:
         out = {}
         with self.lock:
-            for idx, p in self.processes.items():
-                out[str(idx)] = {"pid": p.pid, "running": p.poll() is None}
+            processes = list(self.processes.items())
+        for idx, p in processes:
+            profile_running = bool(self._profile_process_lines(idx))
+            running = p.poll() is None or profile_running
+            out[str(idx)] = {"pid": p.pid, "running": running}
         return out
 
     def _ensure_watcher(self):
@@ -2361,14 +2487,16 @@ def _diagnostic_log_tail(lines: int = 100) -> str:
 def api_diagnostics():
     cfg = load_config()
     monitors = detect_monitors()
+    status = manager.status()
     assignments = []
     for idx, screen in enumerate(cfg.get("screens", [])):
-        target = manager._pick_output(screen, monitors, idx)
+        target = manager._pick_output(screen, monitors, idx,
+                                      allow_new_auto=False)
         assignments.append({
             "screen": screen.get("name") or f"Screen {idx + 1}",
             "configured_output": screen.get("output") or "",
             "assigned_output": target.get("name") if target else "",
-            "running": manager.status().get(str(idx), {}).get("running", False),
+            "running": status.get(str(idx), {}).get("running", False),
         })
     return jsonify({
         "captured_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

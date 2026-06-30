@@ -85,9 +85,12 @@ function renderMonitors() {
 }
 
 function outputOptions(selected) {
-  return [`<option value="">${t("screens.auto")}</option>`]
-    .concat(monitors.map(m => `<option value="${m.name}" ${m.name===selected?"selected":""}>${m.name} (${m.width}x${m.height})</option>`))
-    .join("");
+  const opts = [`<option value="">${t("screens.auto")}</option>`]
+    .concat(monitors.map(m => `<option value="${escape(m.name)}" ${m.name===selected?"selected":""}>${escape(m.name)} (${m.width}x${m.height})</option>`));
+  if (selected && !monitors.some(m => m.name === selected)) {
+    opts.push(`<option value="${escape(selected)}" selected>${escape(selected)} (${t("screens.not_detected")})</option>`);
+  }
+  return opts.join("");
 }
 
 // ---------- Bildschirme ----------
@@ -217,6 +220,7 @@ document.getElementById("save").addEventListener("click", async () => {
   if (r.ok) {
     msg.textContent = t("common.applying");
     await fetch("/api/action/restart", {method:"POST"});
+    await load();
     msg.textContent = t("common.saved_restarted");
     loadAuthStatus();
     loadMaintenanceStatus();
