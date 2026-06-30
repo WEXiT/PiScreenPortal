@@ -33,6 +33,10 @@ Raspberry Pi · Digital Signage · Kiosk Mode · Multi Monitor · AirPlay · Web
 ## Demo
 👉 [Live Demo](https://wexit.github.io/PiScreenPortal/docs)
 
+The live demo is a reduced offline preview. Hardware-only features such as
+real monitor detection, Chromium control, AirPlay and system updates require a
+Raspberry Pi installation.
+
 ## Screenshots
 <p align="center">
   <img src="https://i.imgur.com/2EQvU4x.png" width="45%" />
@@ -110,6 +114,12 @@ The installer handles everything:
 - Sudo rules for `reboot`, `shutdown`, `nmcli`
 - systemd service (autostart at boot)
 - Desktop shortcut on the Pi
+
+It also runs a small Python dependency smoke check:
+
+```bash
+venv/bin/python -c "import flask, qrcode; print('deps ok')"
+```
 
 ---
 

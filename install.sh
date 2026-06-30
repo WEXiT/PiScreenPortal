@@ -117,6 +117,7 @@ if [ ! -d "$DIR/venv" ]; then
 fi
 "$DIR/venv/bin/pip" install --upgrade pip --quiet
 "$DIR/venv/bin/pip" install -r "$DIR/requirements.txt"
+"$DIR/venv/bin/python" -c "import flask, qrcode; print('>>> Python deps ok')"
 
 # --------------------------------------------------
 # 6. Sudo permissions (reboot, shutdown, nmcli, apt updates)

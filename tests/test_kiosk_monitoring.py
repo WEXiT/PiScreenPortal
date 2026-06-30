@@ -60,6 +60,14 @@ HDMI-A-1 connected 1920x1080+1920+0 (normal left inverted right x axis y axis) 6
    1920x1080     59.96*+
 """
 
+XRANDR_VIRTUAL_SAMPLE = """
+Screen 0: minimum 16 x 16, current 5760 x 1080, maximum 32767 x 32767
+VIRTUAL1 connected 1920x1080+0+0 (normal left inverted right x axis y axis)
+DUMMY0 connected 1920x1080+1920+0 (normal left inverted right x axis y axis)
+HEADLESS-1 connected 1920x1080+3840+0 (normal left inverted right x axis y axis)
+HDMI-A-1 connected 1920x1080+0+0 (normal left inverted right x axis y axis) 600mm x 340mm
+"""
+
 
 class MonitorParsingTests(unittest.TestCase):
     def test_parse_xrandr_monitors_ignores_lease_outputs(self):
@@ -80,6 +88,11 @@ class MonitorParsingTests(unittest.TestCase):
         self.assertTrue(monitors[0]["active"])
         self.assertEqual(monitors[1]["geometry"], "1920x1080+1920+0")
         self.assertEqual(monitors[1]["x"], 1920)
+
+    def test_parse_xrandr_monitors_ignores_virtual_outputs(self):
+        monitors = parse_xrandr_monitors(XRANDR_VIRTUAL_SAMPLE)
+
+        self.assertEqual([m["name"] for m in monitors], ["HDMI-A-1"])
 
 
 class OutputAssignmentTests(unittest.TestCase):
@@ -134,6 +147,17 @@ class OutputAssignmentTests(unittest.TestCase):
 
         self.assertIsNone(first)
         self.assertIsNone(second)
+
+    def test_active_monitors_filters_virtual_mocks(self):
+        monitors = [
+            {"name": "DUMMY0", "active": True, "width": 1920, "height": 1080},
+            {"name": "HDMI-A-1", "active": True, "width": 1920, "height": 1080},
+            {"name": "Virtual-1", "active": True, "width": 1920, "height": 1080},
+        ]
+
+        active = self.manager._active_monitors(monitors)
+
+        self.assertEqual([m["name"] for m in active], ["HDMI-A-1"])
 
     def test_start_all_persists_complete_automatic_assignment(self):
         saved_configs = []
@@ -373,6 +397,88 @@ class OutputAssignmentTests(unittest.TestCase):
 
         self.assertEqual(manager.started[0][2]["name"], "HDMI-A-1")
         self.assertIsNone(manager.started[1][2])
+
+
+class ReloadTests(unittest.TestCase):
+    def test_reload_targets_only_kiosk_profile_windows(self):
+        original_which = app_module.shutil.which
+        original_window_ids = app_module._chromium_window_ids
+        original_window_pid = app_module._window_pid
+        original_has_profile = app_module._pid_has_kiosk_profile
+        original_run = app_module.subprocess.run
+        sent = []
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:3] == ["xdotool", "key", "--window"]:
+                sent.append(cmd[3])
+            return SimpleNamespace(returncode=0)
+
+        try:
+            app_module.shutil.which = lambda name: "/usr/bin/xdotool"
+            app_module._chromium_window_ids = lambda env: ["101", "102", "103"]
+            app_module._window_pid = lambda wid, env: {
+                "101": 1001,
+                "102": 1002,
+                "103": 1003,
+            }[wid]
+            app_module._pid_has_kiosk_profile = lambda pid: pid in (1001, 1003)
+            app_module.subprocess.run = fake_run
+
+            ok = app_module._reload_chromium_windows()
+        finally:
+            app_module.shutil.which = original_which
+            app_module._chromium_window_ids = original_window_ids
+            app_module._window_pid = original_window_pid
+            app_module._pid_has_kiosk_profile = original_has_profile
+            app_module.subprocess.run = original_run
+
+        self.assertTrue(ok)
+        self.assertEqual(sent, ["101", "103"])
+
+
+class WatcherTests(unittest.TestCase):
+    def test_watch_tick_respawns_under_apply_lock(self):
+        class RecordingLock:
+            def __init__(self):
+                self.depth = 0
+
+            def __enter__(self):
+                self.depth += 1
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.depth -= 1
+
+            @property
+            def locked(self):
+                return self.depth > 0
+
+        class RecordingManager(KioskManager):
+            def __init__(self):
+                super().__init__()
+                self.apply_lock = RecordingLock()
+                self.started_under_lock = []
+
+            def start_screen(self, idx, screen, monitor, flags):
+                self.started_under_lock.append(self.apply_lock.locked)
+
+        manager = RecordingManager()
+        monitors = parse_xrandr_monitors(XRANDR_SAMPLE)
+        cfg = {
+            "restart_on_crash": True,
+            "screens": [
+                {"name": "Links", "enabled": True, "output": "HDMI-A-2",
+                 "hide_cursor": False, "url": "http://left"},
+            ],
+            "chromium_flags": [],
+        }
+        with manager.lock:
+            manager._desired_running = True
+            manager._last_monitor_layout = manager._layout_signature(monitors)
+
+        manager._watch_tick(cfg, monitors)
+
+        self.assertEqual(manager.started_under_lock, [True])
 
 
 if __name__ == "__main__":

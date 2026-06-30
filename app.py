@@ -2146,6 +2146,42 @@ class KioskManager:
             out[str(idx)] = {"pid": p.pid, "running": running}
         return out
 
+    def _watch_tick(self, cfg: dict | None = None,
+                    monitors: list | None = None) -> None:
+        with self.apply_lock:
+            c = cfg or load_config()
+            with self.lock:
+                desired = self._desired_running
+            if not desired:
+                return
+            monitors = monitors if monitors is not None else detect_monitors()
+            layout = self._layout_signature(monitors)
+            with self.lock:
+                previous_layout = self._last_monitor_layout
+            if previous_layout is not None and layout != previous_layout:
+                log("Monitor-Layout geaendert: "
+                    f"{self._layout_description(monitors)}. "
+                    "Kiosk-Fenster werden neu zugeordnet.")
+                self.start_all(c)
+                return
+            with self.lock:
+                self._last_monitor_layout = layout
+            if not c.get("restart_on_crash"):
+                return
+            active_monitors = self._active_monitors(monitors)
+            enabled_count = sum(1 for s in c["screens"]
+                                if s.get("enabled", True))
+            allow_new_auto = len(active_monitors) >= enabled_count
+            for idx, screen in enumerate(c["screens"]):
+                with self.lock:
+                    p = self.processes.get(idx)
+                if screen.get("enabled") and (p is None or p.poll() is not None):
+                    log(f"Respawn Bildschirm {idx}")
+                    mon = self._pick_output(screen, monitors, idx,
+                                            allow_new_auto=allow_new_auto)
+                    self.start_screen(idx, screen, mon,
+                                      c.get("chromium_flags", []))
+
     def _ensure_watcher(self):
         if self._watcher_started:
             return
@@ -2154,34 +2190,7 @@ class KioskManager:
         def watch():
             while True:
                 time.sleep(5)
-                c = load_config()
-                with self.lock:
-                    desired = self._desired_running
-                if not desired:
-                    continue
-                monitors = detect_monitors()
-                layout = self._layout_signature(monitors)
-                with self.lock:
-                    previous_layout = self._last_monitor_layout
-                if previous_layout is not None and layout != previous_layout:
-                    log("Monitor-Layout geändert: "
-                        f"{self._layout_description(monitors)}. "
-                        "Kiosk-Fenster werden neu zugeordnet.")
-                    self.start_all(c)
-                    continue
-                with self.lock:
-                    self._last_monitor_layout = layout
-                if not c.get("restart_on_crash"):
-                    continue
-                for idx, screen in enumerate(c["screens"]):
-                    with self.lock:
-                        p = self.processes.get(idx)
-                    if screen.get("enabled") and (p is None or p.poll() is not None):
-                        log(f"Respawn Bildschirm {idx}")
-                        mon = self._pick_output(screen, monitors, idx)
-                        with self.apply_lock:
-                            self.start_screen(idx, screen, mon,
-                                              c.get("chromium_flags", []))
+                self._watch_tick()
 
         threading.Thread(target=watch, daemon=True).start()
 
@@ -2507,11 +2516,15 @@ def api_diagnostics():
     for idx, screen in enumerate(cfg.get("screens", [])):
         target = manager._pick_output(screen, monitors, idx,
                                       allow_new_auto=False)
+        running = status.get(str(idx), {}).get("running", False)
+        assigned_output = target.get("name") if target else ""
         assignments.append({
             "screen": screen.get("name") or f"Screen {idx + 1}",
             "configured_output": screen.get("output") or "",
-            "assigned_output": target.get("name") if target else "",
-            "running": status.get(str(idx), {}).get("running", False),
+            "assigned_output": assigned_output,
+            "running": running,
+            "process_running": running,
+            "visible_on_assigned_output": bool(running and assigned_output),
         })
     return jsonify({
         "captured_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -2524,15 +2537,8 @@ def api_diagnostics():
     })
 
 
-def _reload_chromium_windows() -> bool:
-    """F5 an jedes Chromium-Fenster senden. Gibt True zurück, wenn mindestens
-    ein Fenster angetriggert wurde."""
-    if not shutil.which("xdotool"):
-        log("Reload: xdotool ist nicht installiert")
-        return False
-    env = self_env()
+def _chromium_window_ids(env: dict) -> list[str]:
     win_ids = []
-    # Mehrere Klassen durchprobieren (verschiedene Chromium-Varianten)
     for cls in ("chromium", "chromium-browser", "Chromium", "Google-chrome"):
         try:
             out = subprocess.check_output(
@@ -2544,13 +2550,71 @@ def _reload_chromium_windows() -> bool:
                 if line and line not in win_ids:
                     win_ids.append(line)
         except subprocess.CalledProcessError:
-            # xdotool exitet != 0 wenn nichts gefunden - kein Fehler
             pass
         except Exception as e:
             log(f"xdotool search {cls} Fehler: {e}")
+    return win_ids
+
+
+def _window_pid(window_id: str, env: dict) -> int | None:
+    try:
+        out = subprocess.check_output(
+            ["xdotool", "getwindowpid", window_id],
+            env=env, stderr=subprocess.DEVNULL, timeout=5,
+        ).decode().strip()
+        return int(out) if out else None
+    except Exception:
+        return None
+
+
+def _pid_cmdline(pid: int) -> str:
+    try:
+        data = (Path("/proc") / str(pid) / "cmdline").read_bytes()
+        return data.replace(b"\x00", b" ").decode("utf-8", "ignore")
+    except Exception:
+        return ""
+
+
+def _pid_parent(pid: int) -> int | None:
+    try:
+        text = (Path("/proc") / str(pid) / "stat").read_text(
+            encoding="utf-8", errors="ignore")
+        parts = text.rsplit(")", 1)[1].strip().split()
+        if len(parts) >= 2 and parts[1].isdigit():
+            return int(parts[1])
+    except Exception:
+        pass
+    return None
+
+
+def _pid_has_kiosk_profile(pid: int | None) -> bool:
+    seen = set()
+    current = pid
+    for _ in range(12):
+        if not current or current in seen:
+            return False
+        seen.add(current)
+        if "chromium-profile-" in _pid_cmdline(current):
+            return True
+        current = _pid_parent(current)
+    return False
+
+
+def _reload_chromium_windows() -> bool:
+    """F5 an jedes Chromium-Fenster senden. Gibt True zurück, wenn mindestens
+    ein Fenster angetriggert wurde."""
+    if not shutil.which("xdotool"):
+        log("Reload: xdotool ist nicht installiert")
+        return False
+    env = self_env()
+    all_win_ids = _chromium_window_ids(env)
+    win_ids = [
+        wid for wid in all_win_ids
+        if _pid_has_kiosk_profile(_window_pid(wid, env))
+    ]
 
     if not win_ids:
-        log("Reload: Keine Chromium-Fenster gefunden")
+        log("Reload: Keine PiScreenPortal-Kiosk-Fenster gefunden")
         return False
 
     sent = 0
@@ -2564,7 +2628,9 @@ def _reload_chromium_windows() -> bool:
                 sent += 1
         except Exception as e:
             log(f"xdotool key {wid} Fehler: {e}")
-    log(f"Reload: F5 an {sent}/{len(win_ids)} Fenster gesendet")
+    skipped = len(all_win_ids) - len(win_ids)
+    suffix = f", {skipped} andere Chromium-Fenster ignoriert" if skipped else ""
+    log(f"Reload: F5 an {sent}/{len(win_ids)} Kiosk-Fenster gesendet{suffix}")
     return sent > 0
 
 
