@@ -39,7 +39,44 @@ GIT_REMOTE_URL = "https://github.com/WEXiT/PiScreenPortal.git"
 
 
 def default_xauthority() -> str:
+    uid = os.getuid() if hasattr(os, "getuid") else None
+    candidates = [
+        os.environ.get("XAUTHORITY", ""),
+        str(Path.home() / ".Xauthority"),
+    ]
+    if uid is not None:
+        candidates.extend([
+            f"/run/user/{uid}/gdm/Xauthority",
+            f"/run/user/{uid}/Xauthority",
+        ])
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
     return str(Path.home() / ".Xauthority")
+
+
+def display_env() -> dict:
+    env = os.environ.copy()
+    env.setdefault("DISPLAY", ":0")
+    xauthority = default_xauthority()
+    if xauthority:
+        env["XAUTHORITY"] = xauthority
+    env["GNOME_KEYRING_CONTROL"] = ""
+    env["GNOME_KEYRING_PID"] = ""
+    env["SSH_AUTH_SOCK"] = ""
+    return env
+
+
+def x11_display_ready(env: dict | None = None) -> bool:
+    env = env or display_env()
+    if not shutil.which("xset"):
+        return bool(detect_monitors())
+    try:
+        r = subprocess.run(["xset", "q"], env=env, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=3)
+        return r.returncode == 0
+    except Exception:
+        return False
 
 DEFAULT_CONFIG = {
     "port": 2411,
@@ -125,6 +162,7 @@ REQUIRED_FLAGS = [
     "--disable-default-apps",
     "--disable-domain-reliability",
     "--disable-save-password-bubble",
+    "--ozone-platform=x11",
 ]
 FLAG_PREFIXES_SINGLE = (
     "--password-store=",
@@ -132,6 +170,7 @@ FLAG_PREFIXES_SINGLE = (
     "--app=",
     "--window-position=",
     "--window-size=",
+    "--ozone-platform=",
 )
 MANAGED_CHROMIUM_FLAGS = {
     "--kiosk",
@@ -307,6 +346,10 @@ def logs_for_language(text: str, lang: str) -> str:
         ("Monitor-Layout geändert:", "Monitor layout changed:"),
         ("Kiosk-Fenster werden neu zugeordnet.",
          "Kiosk windows are being reassigned."),
+        ("Monitor-Layout geaendert:", "Monitor layout changed:"),
+        ("Monitor-Layout stabilisiert:", "Monitor layout stabilized:"),
+        ("Warte kurz, bis Hotplug stabil ist.",
+         "Waiting briefly for hotplug to stabilize."),
         ("Respawn Bildschirm", "Respawn screen"),
         ("Konnte SECRET_KEY nicht speichern:",
          "Could not save SECRET_KEY:"),
@@ -376,9 +419,7 @@ def parse_xrandr_monitors(output: str) -> list:
 
 
 def detect_monitors() -> list:
-    env = os.environ.copy()
-    env.setdefault("DISPLAY", ":0")
-    env.setdefault("XAUTHORITY", default_xauthority())
+    env = display_env()
     try:
         out = subprocess.check_output(
             ["xrandr", "--query"], env=env, stderr=subprocess.STDOUT, timeout=5
@@ -1488,6 +1529,7 @@ if [ -n "$BROWSER" ]; then
     --disable-popup-blocking \
     --no-first-run \
     --no-default-browser-check \
+    --ozone-platform=x11 \
     --password-store=basic \
     --use-mock-keychain \
     --user-data-dir="$HOME/.cache/piscreenportal/boot-cover-profile" \
@@ -1794,10 +1836,7 @@ class PresentationManager:
         self.started_at = 0
 
     def _env(self):
-        env = os.environ.copy()
-        env.setdefault("DISPLAY", ":0")
-        env.setdefault("XAUTHORITY", default_xauthority())
-        return env
+        return display_env()
 
     def available(self) -> bool:
         return shutil.which("uxplay") is not None
@@ -1861,6 +1900,9 @@ class PresentationManager:
 
 # ---------------------- Kiosk-Manager ---------------------- #
 class KioskManager:
+    HOTPLUG_STABLE_SECONDS = 4.0
+    DISPLAY_WAIT_SECONDS = 30.0
+
     def __init__(self):
         self.processes = {}     # idx -> Popen
         self.reload_threads = {}  # idx -> (thread, stop_event)
@@ -1870,6 +1912,8 @@ class KioskManager:
         self._watcher_started = False
         self._desired_running = False
         self._last_monitor_layout = None
+        self._pending_monitor_layout = None
+        self._pending_monitor_layout_since = 0.0
         self.output_bindings = {}
 
     def _start_unclutter(self) -> None:
@@ -1905,13 +1949,7 @@ class KioskManager:
         subprocess.call(["pkill", "-f", "unclutter"], env=self._env())
 
     def _env(self) -> dict:
-        env = os.environ.copy()
-        env.setdefault("DISPLAY", ":0")
-        env.setdefault("XAUTHORITY", default_xauthority())
-        env["GNOME_KEYRING_CONTROL"] = ""
-        env["GNOME_KEYRING_PID"] = ""
-        env["SSH_AUTH_SOCK"] = ""
-        return env
+        return display_env()
 
     def _apply_rotation(self, output: str, rotation: str) -> None:
         if not output or rotation == "normal":
@@ -1927,6 +1965,24 @@ class KioskManager:
                 if m.get("active", bool(m.get("geometry")))
                 and is_physical_output_name(m.get("name", ""))
                 and m.get("width", 0) > 0 and m.get("height", 0) > 0]
+
+    def _wait_for_display_monitors(self, timeout: float | None = None) -> list:
+        deadline = time.monotonic() + (
+            self.DISPLAY_WAIT_SECONDS if timeout is None else timeout)
+        last_monitors = []
+        while True:
+            env = self._env()
+            display_ready = x11_display_ready(env)
+            monitors = detect_monitors() if display_ready else []
+            if monitors:
+                return monitors
+            last_monitors = monitors
+            if time.monotonic() >= deadline:
+                if not display_ready:
+                    log("X11-Display ist noch nicht bereit; Kiosk-Start wird "
+                        "spaeter erneut versucht.")
+                return last_monitors
+            time.sleep(1)
 
     def _sync_output_bindings(self, screens: list) -> None:
         with self.lock:
@@ -2086,6 +2142,71 @@ class KioskManager:
         if entry:
             entry[1].set()
 
+    def _position_screen_window(self, idx: int, pid: int, monitor: dict) -> None:
+        if not shutil.which("xdotool"):
+            return
+        env = self._env()
+        deadline = time.monotonic() + 6
+        win_ids = []
+        while time.monotonic() < deadline:
+            try:
+                r = subprocess.run(["xdotool", "search", "--pid", str(pid)],
+                                   env=env, capture_output=True, timeout=2)
+                if r.returncode == 0:
+                    win_ids = [
+                        line.strip()
+                        for line in r.stdout.decode("utf-8", "ignore").splitlines()
+                        if line.strip()
+                    ]
+                    if win_ids:
+                        break
+            except Exception:
+                pass
+            if not win_ids:
+                try:
+                    marker = self._profile_marker(idx)
+                    win_ids = [
+                        wid for wid in _chromium_window_ids(env)
+                        if _pid_has_profile_marker(_window_pid(wid, env), marker)
+                    ]
+                    if win_ids:
+                        break
+                except Exception:
+                    win_ids = []
+            time.sleep(0.2)
+        if not win_ids:
+            try:
+                marker = self._profile_marker(idx)
+                win_ids = [
+                    wid for wid in _chromium_window_ids(env)
+                    if _pid_has_profile_marker(_window_pid(wid, env), marker)
+                ]
+            except Exception:
+                win_ids = []
+            if not win_ids:
+                log(f"Fenster fuer Bildschirm {idx} nicht gefunden (PID {pid})")
+                return
+
+        for wid in win_ids:
+            try:
+                subprocess.run(
+                    ["xdotool", "windowmove", wid,
+                     str(monitor["x"]), str(monitor["y"])],
+                    env=env, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, timeout=2)
+                subprocess.run(
+                    ["xdotool", "windowsize", wid,
+                     str(monitor["width"]), str(monitor["height"])],
+                    env=env, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, timeout=2)
+                subprocess.run(
+                    ["xdotool", "windowraise", wid],
+                    env=env, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, timeout=2)
+            except Exception as e:
+                log(f"Fenster-Positionierung Bildschirm {idx} Fehler: {e}")
+        log(f"Fenster fuer Bildschirm {idx} auf {monitor['name']} positioniert")
+
     def start_screen(self, idx: int, screen: dict, monitor: dict, flags: list):
         self.stop_screen(idx)
         if not screen.get("enabled", True):
@@ -2116,6 +2237,7 @@ class KioskManager:
             with self.lock:
                 self.processes[idx] = p
             self._start_reload_thread(idx, int(screen.get("reload_interval", 0) or 0), p.pid)
+            self._position_screen_window(idx, p.pid, monitor)
         except FileNotFoundError:
             log("Chromium nicht gefunden – sudo apt install chromium-browser")
 
@@ -2150,9 +2272,11 @@ class KioskManager:
             self._sync_output_bindings(cfg["screens"])
             with self.lock:
                 self._desired_running = True
-            monitors = detect_monitors()
+            monitors = self._wait_for_display_monitors()
             with self.lock:
                 self._last_monitor_layout = self._layout_signature(monitors)
+                self._pending_monitor_layout = None
+                self._pending_monitor_layout_since = 0.0
             log(f"Erkannte Monitore: {self._layout_description(monitors)}")
             # Zuerst alte Prozesse aufraeumen, die zu entfernten/deaktivierten
             # Screens gehoeren.
@@ -2161,6 +2285,10 @@ class KioskManager:
             with self.lock:
                 stale = [i for i in self.processes.keys() if i not in valid_indices]
             for idx in stale:
+                self.stop_screen(idx)
+            with self.lock:
+                running_valid = [i for i in self.processes.keys() if i in valid_indices]
+            for idx in running_valid:
                 self.stop_screen(idx)
             if any(s.get("hide_cursor") and s.get("enabled") for s in cfg["screens"]):
                 self._start_unclutter()
@@ -2208,7 +2336,8 @@ class KioskManager:
         return out
 
     def _watch_tick(self, cfg: dict | None = None,
-                    monitors: list | None = None) -> None:
+                    monitors: list | None = None,
+                    now: float | None = None) -> None:
         with self.apply_lock:
             c = cfg or load_config()
             with self.lock:
@@ -2216,17 +2345,40 @@ class KioskManager:
             if not desired:
                 return
             monitors = monitors if monitors is not None else detect_monitors()
+            now = time.monotonic() if now is None else now
             layout = self._layout_signature(monitors)
             with self.lock:
                 previous_layout = self._last_monitor_layout
-            if previous_layout is not None and layout != previous_layout:
-                log("Monitor-Layout geaendert: "
+                pending_layout = self._pending_monitor_layout
+                pending_since = self._pending_monitor_layout_since
+            if previous_layout is not None and pending_layout is not None:
+                if pending_layout != layout:
+                    with self.lock:
+                        self._pending_monitor_layout = layout
+                        self._pending_monitor_layout_since = now
+                    log("Monitor-Layout geaendert: "
+                        f"{self._layout_description(monitors)}. "
+                        "Warte kurz, bis Hotplug stabil ist.")
+                    return
+                if now - pending_since < self.HOTPLUG_STABLE_SECONDS:
+                    return
+                log("Monitor-Layout stabilisiert: "
                     f"{self._layout_description(monitors)}. "
                     "Kiosk-Fenster werden neu zugeordnet.")
                 self.start_all(c)
                 return
+            if previous_layout is not None and layout != previous_layout:
+                with self.lock:
+                    self._pending_monitor_layout = layout
+                    self._pending_monitor_layout_since = now
+                log("Monitor-Layout geaendert: "
+                    f"{self._layout_description(monitors)}. "
+                    "Warte kurz, bis Hotplug stabil ist.")
+                return
             with self.lock:
                 self._last_monitor_layout = layout
+                self._pending_monitor_layout = None
+                self._pending_monitor_layout_since = 0.0
             if not c.get("restart_on_crash"):
                 return
             active_monitors = self._active_monitors(monitors)
@@ -2658,17 +2810,21 @@ def _pid_parent(pid: int) -> int | None:
     return None
 
 
-def _pid_has_kiosk_profile(pid: int | None) -> bool:
+def _pid_has_profile_marker(pid: int | None, marker: str) -> bool:
     seen = set()
     current = pid
     for _ in range(12):
         if not current or current in seen:
             return False
         seen.add(current)
-        if "chromium-profile-" in _pid_cmdline(current):
+        if marker in _pid_cmdline(current):
             return True
         current = _pid_parent(current)
     return False
+
+
+def _pid_has_kiosk_profile(pid: int | None) -> bool:
+    return _pid_has_profile_marker(pid, "chromium-profile-")
 
 
 def _reload_chromium_windows() -> bool:
@@ -2763,10 +2919,7 @@ def api_action(name):
 
 
 def self_env():
-    env = os.environ.copy()
-    env.setdefault("DISPLAY", ":0")
-    env.setdefault("XAUTHORITY", default_xauthority())
-    return env
+    return display_env()
 
 
 def _run_monitor_power_cmd(cmd: list[str], env: dict | None = None) -> tuple[bool, str]:
@@ -2949,10 +3102,9 @@ def api_logs():
 def boot_start():
     cfg = load_config()
     if cfg.get("auto_start"):
-        for _ in range(30):
-            if detect_monitors():
-                break
-            time.sleep(1)
+        while not manager._wait_for_display_monitors(timeout=90):
+            log("Kiosk-Autostart wartet weiter: kein nutzbares X11-Monitorlayout erkannt.")
+            time.sleep(10)
         # Entfernt ggf. den sehr frueh gestarteten schwarzen Boot-Cover-Browser,
         # bevor die echten Kiosk-Fenster aufgebaut werden.
         manager.stop_all()

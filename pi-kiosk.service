@@ -1,7 +1,7 @@
 [Unit]
 Description=PiScreenPortal Web Controller
-After=graphical.target network-online.target
-Wants=graphical.target network-online.target
+After=display-manager.service graphical.target network-online.target
+Wants=display-manager.service graphical.target network-online.target
 
 [Service]
 Type=simple
@@ -9,6 +9,7 @@ User=__USER__
 Group=__GROUP__
 Environment=DISPLAY=:0
 Environment=XAUTHORITY=__HOME__/.Xauthority
+Environment=XDG_SESSION_TYPE=x11
 Environment=GNOME_KEYRING_CONTROL=
 Environment=GNOME_KEYRING_PID=
 Environment=SSH_AUTH_SOCK=

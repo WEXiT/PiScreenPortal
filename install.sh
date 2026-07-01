@@ -210,6 +210,7 @@ if [ -n "$BROWSER" ]; then
         --disable-popup-blocking \
         --no-first-run \
         --no-default-browser-check \
+        --ozone-platform=x11 \
         --password-store=basic \
         --use-mock-keychain \
         http://localhost:2411

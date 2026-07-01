@@ -490,7 +490,105 @@ class ReloadTests(unittest.TestCase):
         self.assertNotIn("--new-tab", captured[0])
         self.assertNotIn("--window-position=99,99", captured[0])
         self.assertIn("--window-position=0,0", captured[0])
+        self.assertIn("--ozone-platform=x11", captured[0])
         self.assertIn("--disable-gpu", captured[0])
+
+    def test_start_screen_repositions_x11_window_after_launch(self):
+        original_popen = app_module.subprocess.Popen
+        original_run = app_module.subprocess.run
+        original_which = app_module.shutil.which
+        commands = []
+
+        class FakeProcess:
+            pid = 4321
+
+            def poll(self):
+                return None
+
+        class RecordingManager(KioskManager):
+            def _chromium_bin(self):
+                return "chromium"
+
+            def _profile_dir(self, idx):
+                return f"profile-{idx}"
+
+            def _env(self):
+                return {}
+
+        def fake_popen(cmd, **kwargs):
+            return FakeProcess()
+
+        def fake_run(cmd, **kwargs):
+            commands.append(cmd)
+            if cmd[:3] == ["xdotool", "search", "--pid"]:
+                return SimpleNamespace(returncode=0, stdout=b"777\n", stderr=b"")
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        try:
+            app_module.subprocess.Popen = fake_popen
+            app_module.subprocess.run = fake_run
+            app_module.shutil.which = lambda name: "/usr/bin/xdotool" if name == "xdotool" else None
+            manager = RecordingManager()
+            manager.start_screen(
+                0,
+                {"name": "Links", "enabled": True, "url": "http://left",
+                 "zoom": 1, "reload_interval": 0},
+                {"name": "HDMI-A-2", "x": 1920, "y": 0,
+                 "width": 1920, "height": 1080},
+                [],
+            )
+        finally:
+            app_module.subprocess.Popen = original_popen
+            app_module.subprocess.run = original_run
+            app_module.shutil.which = original_which
+
+        self.assertIn(["xdotool", "search", "--pid", "4321"], commands)
+        self.assertIn(["xdotool", "windowmove", "777", "1920", "0"], commands)
+        self.assertIn(["xdotool", "windowsize", "777", "1920", "1080"], commands)
+        self.assertIn(["xdotool", "windowraise", "777"], commands)
+
+    def test_window_reposition_falls_back_to_profile_window_search(self):
+        original_run = app_module.subprocess.run
+        original_which = app_module.shutil.which
+        original_window_ids = app_module._chromium_window_ids
+        original_window_pid = app_module._window_pid
+        original_has_marker = app_module._pid_has_profile_marker
+        commands = []
+
+        class RecordingManager(KioskManager):
+            def _env(self):
+                return {}
+
+        def fake_run(cmd, **kwargs):
+            commands.append(cmd)
+            if cmd[:3] == ["xdotool", "search", "--pid"]:
+                return SimpleNamespace(returncode=1, stdout=b"", stderr=b"")
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        try:
+            app_module.subprocess.run = fake_run
+            app_module.shutil.which = lambda name: "/usr/bin/xdotool" if name == "xdotool" else None
+            app_module._chromium_window_ids = lambda env: ["700", "701"]
+            app_module._window_pid = lambda wid, env: {"700": 111, "701": 222}[wid]
+            app_module._pid_has_profile_marker = lambda pid, marker: pid == 222 and marker == "chromium-profile-1"
+
+            manager = RecordingManager()
+            manager._position_screen_window(
+                1,
+                4321,
+                {"name": "HDMI-A-1", "x": 0, "y": 0,
+                 "width": 1920, "height": 1080},
+            )
+        finally:
+            app_module.subprocess.run = original_run
+            app_module.shutil.which = original_which
+            app_module._chromium_window_ids = original_window_ids
+            app_module._window_pid = original_window_pid
+            app_module._pid_has_profile_marker = original_has_marker
+
+        self.assertIn(["xdotool", "windowmove", "701", "0", "0"], commands)
+        self.assertIn(["xdotool", "windowsize", "701", "1920", "1080"], commands)
+        self.assertNotIn(["xdotool", "windowmove", "700", "0", "0"], commands)
 
     def test_reload_targets_only_kiosk_profile_windows(self):
         original_which = app_module.shutil.which
@@ -529,6 +627,49 @@ class ReloadTests(unittest.TestCase):
 
 
 class WatcherTests(unittest.TestCase):
+    def test_watch_tick_waits_for_hotplug_layout_to_stabilize(self):
+        class RecordingManager(KioskManager):
+            HOTPLUG_STABLE_SECONDS = 4.0
+
+            def __init__(self):
+                super().__init__()
+                self.restart_count = 0
+
+            def start_all(self, cfg=None):
+                self.restart_count += 1
+                with self.lock:
+                    self._last_monitor_layout = self._layout_signature(
+                        app_module.detect_monitors())
+                    self._pending_monitor_layout = None
+                    self._pending_monitor_layout_since = 0.0
+
+        manager = RecordingManager()
+        two_monitors = parse_xrandr_monitors(XRANDR_SAMPLE)
+        one_monitor = [two_monitors[0]]
+        cfg = {"restart_on_crash": False, "screens": [], "chromium_flags": []}
+        original_detect_monitors = app_module.detect_monitors
+        current_monitors = {"value": two_monitors}
+
+        try:
+            app_module.detect_monitors = lambda: current_monitors["value"]
+            with manager.lock:
+                manager._desired_running = True
+                manager._last_monitor_layout = manager._layout_signature(two_monitors)
+
+            current_monitors["value"] = one_monitor
+            manager._watch_tick(cfg, one_monitor, now=10.0)
+            self.assertEqual(manager.restart_count, 0)
+
+            current_monitors["value"] = two_monitors
+            manager._watch_tick(cfg, two_monitors, now=15.0)
+            self.assertEqual(manager.restart_count, 0)
+
+            manager._watch_tick(cfg, two_monitors, now=20.0)
+        finally:
+            app_module.detect_monitors = original_detect_monitors
+
+        self.assertEqual(manager.restart_count, 1)
+
     def test_watch_tick_does_not_respawn_two_screens_on_same_explicit_output(self):
         class RecordingManager(KioskManager):
             def __init__(self):
