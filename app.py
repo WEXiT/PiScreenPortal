@@ -252,6 +252,21 @@ def normalize_chromium_flags(flags) -> list[str]:
 def validate_config_payload(cfg: dict) -> tuple[dict | None, str | None]:
     if not isinstance(cfg, dict) or "screens" not in cfg:
         return None, "Ungültige Config"
+    if not isinstance(cfg.get("screens"), list):
+        return None, "Bildschirm-Konfiguration muss eine Liste sein."
+    assigned_outputs = set()
+    for screen in cfg["screens"]:
+        if not isinstance(screen, dict):
+            return None, "Ungültiger Bildschirm-Eintrag."
+        if not screen.get("enabled", True):
+            continue
+        output = str(screen.get("output") or "").strip()
+        if output and output in assigned_outputs:
+            return None, (
+                f"Monitor-Ausgang {output} ist mehreren aktiven Bildschirmen "
+                "zugewiesen.")
+        if output:
+            assigned_outputs.add(output)
     auth = (cfg.get("auth") or {})
     if auth.get("enabled") and (not auth.get("username") or not auth.get("password")):
         return None, ("Wenn der Zugangsschutz aktiv ist, müssen Benutzername "
@@ -381,6 +396,7 @@ def logs_for_language(text: str, lang: str) -> str:
 
 # ---------------------- Monitor-Erkennung ---------------------- #
 XRANDR_GEOMETRY_RE = re.compile(r"\b(\d+)x(\d+)\+(-?\d+)\+(-?\d+)\b")
+XRANDR_MODE_RE = re.compile(r"^\s+(\d+)x(\d+)(?:i)?\s")
 VIRTUAL_OUTPUT_PREFIXES = (
     "lease-",
     "virtual",
@@ -399,22 +415,46 @@ def is_physical_output_name(name: str) -> bool:
 
 def parse_xrandr_monitors(output: str) -> list:
     monitors = []
+    current_monitor = None
     for line in (output or "").splitlines():
         parts = line.split()
-        if len(parts) < 2 or parts[1] != "connected":
+        if len(parts) >= 2 and parts[1] in ("connected", "disconnected"):
+            current_monitor = None
+        if len(parts) >= 2 and parts[1] == "connected":
+            name = parts[0]
+            if not is_physical_output_name(name):
+                continue
+            match = XRANDR_GEOMETRY_RE.search(line)
+            if match:
+                w, h, x, y = map(int, match.groups())
+                geometry = match.group(0)
+                active = True
+            else:
+                w = h = x = y = 0
+                geometry = ""
+                active = False
+            current_monitor = {
+                "name": name,
+                "primary": "primary" in parts,
+                "x": x,
+                "y": y,
+                "width": w,
+                "height": h,
+                "geometry": geometry,
+                "active": active,
+            }
+            monitors.append(current_monitor)
             continue
-        name = parts[0]
-        if not is_physical_output_name(name):
-            continue
-        match = XRANDR_GEOMETRY_RE.search(line)
-        if not match:
-            continue
-        w, h, x, y = map(int, match.groups())
-        geometry = match.group(0)
-        monitors.append({"name": name, "primary": "primary" in parts,
-                         "x": x, "y": y, "width": w, "height": h,
-                         "geometry": geometry, "active": True})
-    monitors.sort(key=lambda m: m["x"])
+        # Ein frisch eingesteckter Ausgang ist oft bereits "connected", hat
+        # aber noch keine Geometrie. Die erste angebotene Aufloesung hilft der
+        # Anzeige und wird nach `xrandr --auto` durch die echte ersetzt.
+        if current_monitor is not None and not current_monitor["active"]:
+            mode = XRANDR_MODE_RE.match(line)
+            if mode and not current_monitor["width"]:
+                current_monitor["width"], current_monitor["height"] = map(
+                    int, mode.groups())
+    monitors.sort(key=lambda m: (
+        not m["active"], m["x"], m["name"].lower()))
     return monitors
 
 
@@ -425,10 +465,22 @@ def detect_monitors() -> list:
             ["xrandr", "--query"], env=env, stderr=subprocess.STDOUT, timeout=5
         ).decode("utf-8", errors="ignore")
     except Exception as e:
+        detect_monitors.last_query_ok = False
         log(f"xrandr fehlgeschlagen: {e}")
         return []
 
+    detect_monitors.last_query_ok = True
     return parse_xrandr_monitors(out)
+
+
+detect_monitors.last_query_ok = True
+
+
+def monitor_query_succeeded() -> bool:
+    # Tests und Integrationen ersetzen detect_monitors teilweise durch eine
+    # einfache Funktion. Fehlt dort das Attribut, gilt der gelieferte Wert als
+    # erfolgreicher Query.
+    return bool(getattr(detect_monitors, "last_query_ok", True))
 
 
 # ---------------------- System-Info ---------------------- #
@@ -576,6 +628,8 @@ _SERVICE_SPEC = [
         "Blendet den Mauszeiger aus (benötigt X11)."),
     ("xdotool",   "binary",  ("xdotool",),                "xdotool",                  "tool",
         "Wird für die Reload-Aktion benötigt."),
+    ("wmctrl",    "binary",  ("wmctrl",),                 "wmctrl",                   "tool",
+        "Macht die Vollbild-Positionierung auf mehreren Monitoren robuster."),
     ("xrandr",    "binary",  ("xrandr",),                 "xrandr",                   "tool",
         "Wird für die Monitor-Erkennung benötigt."),
     ("uxplay",    "process", ("uxplay",),                 "UxPlay (AirPlay)",         "airplay",
@@ -1901,10 +1955,14 @@ class PresentationManager:
 # ---------------------- Kiosk-Manager ---------------------- #
 class KioskManager:
     HOTPLUG_STABLE_SECONDS = 4.0
-    DISPLAY_WAIT_SECONDS = 30.0
+    DISPLAY_WAIT_SECONDS = 10.0
+    WATCH_INTERVAL_SECONDS = 2.0
+    VISIBILITY_CHECK_SECONDS = 15.0
 
     def __init__(self):
         self.processes = {}     # idx -> Popen
+        self.process_outputs = {}  # idx -> xrandr output name
+        self.window_health = {}  # idx -> last known window visibility
         self.reload_threads = {}  # idx -> (thread, stop_event)
         self.unclutter_proc = None
         self.lock = threading.Lock()
@@ -1914,6 +1972,7 @@ class KioskManager:
         self._last_monitor_layout = None
         self._pending_monitor_layout = None
         self._pending_monitor_layout_since = 0.0
+        self._last_visibility_check = 0.0
         self.output_bindings = {}
 
     def _start_unclutter(self) -> None:
@@ -1946,7 +2005,15 @@ class KioskManager:
             except Exception:
                 pass
         self.unclutter_proc = None
-        subprocess.call(["pkill", "-f", "unclutter"], env=self._env())
+        if shutil.which("pkill"):
+            try:
+                subprocess.run(
+                    ["pkill", "-TERM", "-f", "unclutter"],
+                    env=self._env(), stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, timeout=5,
+                )
+            except Exception as e:
+                log(f"unclutter-Stop fehlgeschlagen: {e}")
 
     def _env(self) -> dict:
         return display_env()
@@ -1966,7 +2033,109 @@ class KioskManager:
                 and is_physical_output_name(m.get("name", ""))
                 and m.get("width", 0) > 0 and m.get("height", 0) > 0]
 
-    def _wait_for_display_monitors(self, timeout: float | None = None) -> list:
+    @staticmethod
+    def _monitors_overlap(first: dict, second: dict) -> bool:
+        return not (
+            first["x"] + first["width"] <= second["x"]
+            or second["x"] + second["width"] <= first["x"]
+            or first["y"] + first["height"] <= second["y"]
+            or second["y"] + second["height"] <= first["y"]
+        )
+
+    def _layout_needs_repair(self, monitors: list) -> bool:
+        connected = [
+            m for m in monitors
+            if is_physical_output_name(m.get("name", ""))
+        ]
+        if not connected:
+            return False
+        if any(not m.get("active", False) for m in connected):
+            return True
+        if len(connected) == 1:
+            return connected[0].get("x", 0) != 0 or connected[0].get("y", 0) != 0
+        for idx, first in enumerate(connected):
+            for second in connected[idx + 1:]:
+                if self._monitors_overlap(first, second):
+                    return True
+        return False
+
+    def _ordered_output_names(self, monitors: list,
+                              cfg: dict | None = None) -> list[str]:
+        available = {
+            m["name"] for m in monitors
+            if is_physical_output_name(m.get("name", ""))
+        }
+        ordered = []
+
+        def add(name) -> None:
+            name = str(name or "").strip()
+            if name in available and name not in ordered:
+                ordered.append(name)
+
+        for screen in (cfg or {}).get("screens", []):
+            if screen.get("enabled", True):
+                add(screen.get("output"))
+        with self.lock:
+            for idx in sorted(self.output_bindings):
+                add(self.output_bindings[idx])
+        for monitor in sorted(
+                monitors,
+                key=lambda m: (
+                    not m.get("active", False),
+                    m.get("x", 0),
+                    m.get("name", "").lower())):
+            add(monitor.get("name"))
+        return ordered
+
+    def _prepare_monitor_layout(self, monitors: list,
+                                cfg: dict | None = None) -> list:
+        """Aktiviert Hotplug-Ausgaenge und verhindert geklonte Geometrien.
+
+        Manche Desktop-Sitzungen melden einen frisch eingesteckten HDMI-Port
+        nur als `connected`, ohne ihn zu aktivieren. Andere legen beide
+        Ausgaenge auf 0,0 und spiegeln sie. Beides kann zwei getrennte
+        Kiosk-Fenster nicht anzeigen.
+        """
+        if not self._layout_needs_repair(monitors):
+            return monitors
+        output_names = self._ordered_output_names(monitors, cfg)
+        if not output_names:
+            return monitors
+        rotations = {}
+        for screen in (cfg or {}).get("screens", []):
+            output = str(screen.get("output") or "").strip()
+            rotation = str(screen.get("rotation") or "normal")
+            if output in output_names and rotation in (
+                    "normal", "left", "right", "inverted"):
+                rotations[output] = rotation
+        cmd = ["xrandr"]
+        previous = None
+        for output in output_names:
+            cmd.extend(["--output", output, "--auto", "--rotate",
+                        rotations.get(output, "normal")])
+            if previous is None:
+                cmd.extend(["--pos", "0x0"])
+            else:
+                cmd.extend(["--right-of", previous])
+            previous = output
+        try:
+            result = subprocess.run(
+                cmd, env=self._env(), capture_output=True, timeout=12)
+            if result.returncode != 0:
+                error = (result.stderr + result.stdout).decode(
+                    "utf-8", "ignore").strip()
+                log("Monitor-Layout konnte nicht aktiviert werden: "
+                    f"{error or f'Exit-Code {result.returncode}'}")
+                return monitors
+            log("Monitor-Layout aktiviert: " + ", ".join(output_names))
+            refreshed = detect_monitors()
+            return refreshed if monitor_query_succeeded() else monitors
+        except Exception as e:
+            log(f"Monitor-Layout konnte nicht aktiviert werden: {e}")
+            return monitors
+
+    def _wait_for_display_monitors(self, timeout: float | None = None,
+                                   cfg: dict | None = None) -> list:
         deadline = time.monotonic() + (
             self.DISPLAY_WAIT_SECONDS if timeout is None else timeout)
         last_monitors = []
@@ -1974,7 +2143,10 @@ class KioskManager:
             env = self._env()
             display_ready = x11_display_ready(env)
             monitors = detect_monitors() if display_ready else []
-            if monitors:
+            query_ok = monitor_query_succeeded() if display_ready else False
+            if query_ok:
+                monitors = self._prepare_monitor_layout(monitors, cfg)
+            if self._active_monitors(monitors):
                 return monitors
             last_monitors = monitors
             if time.monotonic() >= deadline:
@@ -2066,10 +2238,9 @@ class KioskManager:
     def _profile_marker(idx: int) -> str:
         return f"chromium-profile-{idx}"
 
-    def _profile_process_lines(self, idx: int) -> list[str]:
+    def _process_lines_matching(self, marker: str) -> list[str]:
         if not shutil.which("pgrep"):
             return []
-        marker = self._profile_marker(idx)
         browser_re = re.compile(
             r"(^|[\\/ ])(chromium|chromium-browser|google-chrome|"
             r"chrome_crashpad_handler)([\\/ ]|$)"
@@ -2092,8 +2263,24 @@ class KioskManager:
                 matches.append(line)
         return matches
 
-    def _terminate_profile_processes(self, idx: int) -> None:
-        marker = self._profile_marker(idx)
+    def _profile_process_lines(self, idx: int) -> list[str]:
+        return self._process_lines_matching(self._profile_marker(idx))
+
+    def _screen_process_running(self, idx: int, process=None) -> bool:
+        if process is None:
+            with self.lock:
+                process = self.processes.get(idx)
+        if process is not None:
+            try:
+                if process.poll() is None:
+                    return True
+            except Exception:
+                pass
+        # Chromium can hand the profile to another browser process and let the
+        # original Popen PID exit. Profile processes are the reliable fallback.
+        return bool(self._profile_process_lines(idx))
+
+    def _terminate_processes_matching(self, marker: str) -> None:
         if not shutil.which("pkill"):
             return
         try:
@@ -2101,14 +2288,17 @@ class KioskManager:
                            env=self._env(), stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL, timeout=5)
             for _ in range(10):
-                if not self._profile_process_lines(idx):
+                if not self._process_lines_matching(marker):
                     return
                 time.sleep(0.2)
             subprocess.run(["pkill", "-KILL", "-f", marker],
                            env=self._env(), stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL, timeout=5)
         except Exception as e:
-            log(f"Profil-Stop-Fehler {idx}: {e}")
+            log(f"Profil-Stop-Fehler {marker}: {e}")
+
+    def _terminate_profile_processes(self, idx: int) -> None:
+        self._terminate_processes_matching(self._profile_marker(idx))
 
     def _chromium_bin(self) -> str:
         for c in ("chromium-browser", "chromium", "google-chrome"):
@@ -2142,9 +2332,60 @@ class KioskManager:
         if entry:
             entry[1].set()
 
-    def _position_screen_window(self, idx: int, pid: int, monitor: dict) -> None:
+    def _screen_window_ids(self, idx: int, env: dict | None = None) -> list[str]:
         if not shutil.which("xdotool"):
-            return
+            return []
+        env = env or self._env()
+        marker = self._profile_marker(idx)
+        return [
+            wid for wid in _chromium_window_ids(env)
+            if _pid_has_profile_marker(_window_pid(wid, env), marker)
+        ]
+
+    @staticmethod
+    def _window_geometry(window_id: str, env: dict) -> dict | None:
+        try:
+            result = subprocess.run(
+                ["xdotool", "getwindowgeometry", "--shell", window_id],
+                env=env, capture_output=True, timeout=3,
+            )
+            if result.returncode != 0:
+                return None
+            values = {}
+            for line in result.stdout.decode("utf-8", "ignore").splitlines():
+                key, sep, value = line.partition("=")
+                if sep and key in ("X", "Y", "WIDTH", "HEIGHT"):
+                    values[key.lower()] = int(value)
+            if all(key in values for key in ("x", "y", "width", "height")):
+                return values
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _window_covers_monitor(geometry: dict, monitor: dict,
+                               tolerance: int = 12) -> bool:
+        return (
+            abs(geometry["x"] - monitor["x"]) <= tolerance
+            and abs(geometry["y"] - monitor["y"]) <= tolerance
+            and geometry["width"] >= monitor["width"] - tolerance
+            and geometry["height"] >= monitor["height"] - tolerance
+        )
+
+    def _set_window_health(self, idx: int, visible: bool | None,
+                           output: str | None = None) -> None:
+        with self.lock:
+            self.window_health[idx] = {
+                "visible": visible,
+                "output": output or self.process_outputs.get(idx, ""),
+                "checked_at": time.time(),
+            }
+
+    def _position_screen_window(self, idx: int, pid: int,
+                                monitor: dict) -> bool | None:
+        if not shutil.which("xdotool"):
+            self._set_window_health(idx, None, monitor.get("name"))
+            return None
         env = self._env()
         deadline = time.monotonic() + 6
         win_ids = []
@@ -2164,11 +2405,7 @@ class KioskManager:
                 pass
             if not win_ids:
                 try:
-                    marker = self._profile_marker(idx)
-                    win_ids = [
-                        wid for wid in _chromium_window_ids(env)
-                        if _pid_has_profile_marker(_window_pid(wid, env), marker)
-                    ]
+                    win_ids = self._screen_window_ids(idx, env)
                     if win_ids:
                         break
                 except Exception:
@@ -2176,46 +2413,126 @@ class KioskManager:
             time.sleep(0.2)
         if not win_ids:
             try:
-                marker = self._profile_marker(idx)
-                win_ids = [
-                    wid for wid in _chromium_window_ids(env)
-                    if _pid_has_profile_marker(_window_pid(wid, env), marker)
-                ]
+                win_ids = self._screen_window_ids(idx, env)
             except Exception:
                 win_ids = []
             if not win_ids:
                 log(f"Fenster fuer Bildschirm {idx} nicht gefunden (PID {pid})")
-                return
+                self._set_window_health(idx, False, monitor.get("name"))
+                return False
 
+        commands_ok = True
         for wid in win_ids:
             try:
-                subprocess.run(
-                    ["xdotool", "windowmove", wid,
-                     str(monitor["x"]), str(monitor["y"])],
-                    env=env, stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL, timeout=2)
-                subprocess.run(
-                    ["xdotool", "windowsize", wid,
-                     str(monitor["width"]), str(monitor["height"])],
-                    env=env, stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL, timeout=2)
-                subprocess.run(
-                    ["xdotool", "windowraise", wid],
-                    env=env, stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL, timeout=2)
+                commands = [["xdotool", "windowmap", wid]]
+                if shutil.which("wmctrl"):
+                    # Fullscreen windows are ignored by some window managers
+                    # when moved directly. Temporarily remove the EWMH state,
+                    # place the window, then restore fullscreen on its target.
+                    try:
+                        wm_window_id = f"0x{int(wid):x}"
+                    except ValueError:
+                        wm_window_id = wid
+                    commands.extend([
+                        ["wmctrl", "-ir", wm_window_id,
+                         "-b", "remove,fullscreen"],
+                        ["wmctrl", "-ir", wm_window_id, "-e",
+                         f"0,{monitor['x']},{monitor['y']},"
+                         f"{monitor['width']},{monitor['height']}"],
+                        ["wmctrl", "-ir", wm_window_id,
+                         "-b", "add,fullscreen"],
+                    ])
+                else:
+                    commands.extend([
+                        ["xdotool", "windowmove", wid,
+                         str(monitor["x"]), str(monitor["y"])],
+                        ["xdotool", "windowsize", wid,
+                         str(monitor["width"]), str(monitor["height"])],
+                    ])
+                commands.append(["xdotool", "windowraise", wid])
+                for command in commands:
+                    result = subprocess.run(
+                        command, env=env, stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL, timeout=2)
+                    if result.returncode != 0:
+                        commands_ok = False
             except Exception as e:
+                commands_ok = False
                 log(f"Fenster-Positionierung Bildschirm {idx} Fehler: {e}")
-        log(f"Fenster fuer Bildschirm {idx} auf {monitor['name']} positioniert")
+        geometries = [
+            geometry for geometry in
+            (self._window_geometry(wid, env) for wid in win_ids)
+            if geometry is not None
+        ]
+        visible = (
+            any(self._window_covers_monitor(geometry, monitor)
+                for geometry in geometries)
+            if geometries else commands_ok
+        )
+        self._set_window_health(idx, visible, monitor.get("name"))
+        if visible:
+            log(f"Fenster fuer Bildschirm {idx} auf {monitor['name']} positioniert")
+        else:
+            log(f"Fenster fuer Bildschirm {idx} konnte nicht sichtbar auf "
+                f"{monitor['name']} positioniert werden")
+        return visible
+
+    def _verify_screen_window(self, idx: int, monitor: dict,
+                              repair: bool = True) -> bool | None:
+        if not shutil.which("xdotool"):
+            self._set_window_health(idx, None, monitor.get("name"))
+            return None
+        env = self._env()
+        win_ids = self._screen_window_ids(idx, env)
+        if not win_ids:
+            self._set_window_health(idx, False, monitor.get("name"))
+            return False
+        geometries = [
+            geometry for geometry in
+            (self._window_geometry(wid, env) for wid in win_ids)
+            if geometry is not None
+        ]
+        if any(self._window_covers_monitor(geometry, monitor)
+               for geometry in geometries):
+            self._set_window_health(idx, True, monitor.get("name"))
+            return True
+        if not geometries:
+            self._set_window_health(idx, None, monitor.get("name"))
+            return None
+        if not repair:
+            self._set_window_health(idx, False, monitor.get("name"))
+            return False
+        log(f"Fenster fuer Bildschirm {idx} liegt nicht auf "
+            f"{monitor['name']} und wird neu positioniert")
+        with self.lock:
+            process = self.processes.get(idx)
+        pid = process.pid if process is not None else 0
+        return self._position_screen_window(idx, pid, monitor)
 
     def start_screen(self, idx: int, screen: dict, monitor: dict, flags: list):
         self.stop_screen(idx)
         if not screen.get("enabled", True):
             return
         if not monitor:
+            self._set_window_health(idx, False)
             log(f"Kein Monitor für Bildschirm {idx} ({screen.get('name')})")
             return
 
-        self._apply_rotation(monitor["name"], screen.get("rotation", "normal"))
+        rotation = screen.get("rotation", "normal")
+        self._apply_rotation(monitor["name"], rotation)
+        if rotation != "normal":
+            # Rotation tauscht bei left/right Breite und Hoehe. Chromium und
+            # die nachgelagerte Sichtbarkeitspruefung brauchen deshalb die
+            # Geometrie nach dem xrandr-Aufruf, nicht den alten Snapshot.
+            refreshed = detect_monitors()
+            if monitor_query_succeeded():
+                rotated = next(
+                    (candidate for candidate in self._active_monitors(refreshed)
+                     if candidate["name"] == monitor["name"]),
+                    None,
+                )
+                if rotated is not None:
+                    monitor = rotated
 
         cmd = [
             self._chromium_bin(),
@@ -2236,15 +2553,23 @@ class KioskManager:
                                  stderr=subprocess.DEVNULL)
             with self.lock:
                 self.processes[idx] = p
+                self.process_outputs[idx] = monitor["name"]
             self._start_reload_thread(idx, int(screen.get("reload_interval", 0) or 0), p.pid)
             self._position_screen_window(idx, p.pid, monitor)
         except FileNotFoundError:
             log("Chromium nicht gefunden – sudo apt install chromium-browser")
 
+            self._set_window_health(idx, False, monitor.get("name"))
+        except Exception as e:
+            log(f"Chromium-Startfehler Bildschirm {idx}: {e}")
+            self._set_window_health(idx, False, monitor.get("name"))
+
     def stop_screen(self, idx: int):
         self._stop_reload_thread(idx)
         with self.lock:
             p = self.processes.pop(idx, None)
+            self.process_outputs.pop(idx, None)
+            self.window_health.pop(idx, None)
         if p and p.poll() is None:
             try:
                 p.terminate()
@@ -2261,62 +2586,125 @@ class KioskManager:
             if not keep_desired:
                 with self.lock:
                     self._desired_running = False
-            for idx in list(self.processes.keys()):
+            with self.lock:
+                indices = (
+                    set(self.processes)
+                    | set(self.process_outputs)
+                    | set(self.reload_threads)
+                )
+            for profile_dir in BASE_DIR.glob("chromium-profile-*"):
+                suffix = profile_dir.name.removeprefix("chromium-profile-")
+                if suffix.isdigit():
+                    indices.add(int(suffix))
+            for idx in sorted(indices):
                 self.stop_screen(idx)
-            subprocess.call(["pkill", "-f", "chromium"], env=self._env())
+            # The boot cover uses a separate profile. Never kill every Chromium
+            # process because the user may have unrelated browser windows open.
+            self._terminate_processes_matching("boot-cover-profile")
             self._stop_unclutter()
+
+    def _assign_screens(self, cfg: dict, monitors: list) -> dict:
+        active_monitors = self._active_monitors(monitors)
+        enabled_count = sum(1 for screen in cfg["screens"]
+                            if screen.get("enabled", True))
+        allow_new_auto = len(active_monitors) >= enabled_count
+        assignments = {
+            idx: None for idx in range(len(cfg["screens"]))
+        }
+        config_changed = False
+        reserved_outputs = set()
+
+        def assign(idx: int, screen: dict) -> None:
+            nonlocal config_changed
+            monitor = self._pick_output(
+                screen, monitors, idx,
+                allow_new_auto=allow_new_auto,
+                reserved_outputs=reserved_outputs,
+            )
+            assignments[idx] = monitor
+            if monitor:
+                reserved_outputs.add(monitor["name"])
+            if monitor and not str(screen.get("output") or "").strip():
+                screen["output"] = monitor["name"]
+                config_changed = True
+                log(f"Bildschirm {idx} ({screen.get('name')}) an "
+                    f"{monitor['name']} gebunden")
+
+        # Feste Ausgaenge zuerst reservieren. Sonst kann ein davor stehender
+        # automatischer Screen genau den HDMI-Port belegen, den ein spaeterer
+        # Screen explizit benoetigt.
+        for idx, screen in enumerate(cfg["screens"]):
+            if (screen.get("enabled", True)
+                    and str(screen.get("output") or "").strip()):
+                assign(idx, screen)
+        for idx, screen in enumerate(cfg["screens"]):
+            if (screen.get("enabled", True)
+                    and not str(screen.get("output") or "").strip()):
+                assign(idx, screen)
+        if config_changed:
+            save_config(cfg)
+        return assignments
+
+    def _reconcile_screens(self, cfg: dict, monitors: list,
+                           restart_existing: bool = False) -> None:
+        self._sync_output_bindings(cfg["screens"])
+        assignments = self._assign_screens(cfg, monitors)
+        valid_indices = {
+            idx for idx, screen in enumerate(cfg["screens"])
+            if screen.get("enabled", True)
+        }
+        with self.lock:
+            stale = [
+                idx for idx in self.processes
+                if idx not in valid_indices
+            ]
+        for idx in stale:
+            self.stop_screen(idx)
+
+        if any(screen.get("hide_cursor") and screen.get("enabled", True)
+               for screen in cfg["screens"]):
+            self._start_unclutter()
+        else:
+            self._stop_unclutter()
+
+        flags = cfg.get("chromium_flags", [])
+        for idx, screen in enumerate(cfg["screens"]):
+            if not screen.get("enabled", True):
+                self.stop_screen(idx)
+                continue
+            monitor = assignments.get(idx)
+            with self.lock:
+                process = self.processes.get(idx)
+                current_output = self.process_outputs.get(idx)
+            running = self._screen_process_running(idx, process)
+            if monitor is None:
+                if restart_existing or running:
+                    self.start_screen(idx, screen, None, flags)
+                else:
+                    self._set_window_health(idx, False)
+                continue
+            if (restart_existing or not running
+                    or current_output != monitor["name"]):
+                self.start_screen(idx, screen, monitor, flags)
+                continue
+            # A geometry change may move Chromium to the primary monitor even
+            # when the output name stayed the same. Repair without interrupting
+            # the page that is still live.
+            self._verify_screen_window(idx, monitor, repair=True)
 
     def start_all(self, cfg: dict | None = None):
         with self.apply_lock:
             cfg = cfg or load_config()
-            self._sync_output_bindings(cfg["screens"])
             with self.lock:
                 self._desired_running = True
-            monitors = self._wait_for_display_monitors()
+            self._terminate_processes_matching("boot-cover-profile")
+            monitors = self._wait_for_display_monitors(cfg=cfg)
             with self.lock:
                 self._last_monitor_layout = self._layout_signature(monitors)
                 self._pending_monitor_layout = None
                 self._pending_monitor_layout_since = 0.0
             log(f"Erkannte Monitore: {self._layout_description(monitors)}")
-            # Zuerst alte Prozesse aufraeumen, die zu entfernten/deaktivierten
-            # Screens gehoeren.
-            valid_indices = {i for i, s in enumerate(cfg["screens"])
-                             if s.get("enabled", True)}
-            with self.lock:
-                stale = [i for i in self.processes.keys() if i not in valid_indices]
-            for idx in stale:
-                self.stop_screen(idx)
-            with self.lock:
-                running_valid = [i for i in self.processes.keys() if i in valid_indices]
-            for idx in running_valid:
-                self.stop_screen(idx)
-            if any(s.get("hide_cursor") and s.get("enabled") for s in cfg["screens"]):
-                self._start_unclutter()
-            else:
-                self._stop_unclutter()
-            active_monitors = self._active_monitors(monitors)
-            enabled_count = sum(1 for s in cfg["screens"]
-                                if s.get("enabled", True))
-            allow_new_auto = len(active_monitors) >= enabled_count
-            config_changed = False
-            reserved_outputs = set()
-            for idx, screen in enumerate(cfg["screens"]):
-                if not screen.get("enabled", True):
-                    self.stop_screen(idx)
-                    continue
-                mon = self._pick_output(screen, monitors, idx,
-                                        allow_new_auto=allow_new_auto,
-                                        reserved_outputs=reserved_outputs)
-                if mon:
-                    reserved_outputs.add(mon["name"])
-                if mon and not str(screen.get("output") or "").strip():
-                    screen["output"] = mon["name"]
-                    config_changed = True
-                    log(f"Bildschirm {idx} ({screen.get('name')}) an "
-                        f"{mon['name']} gebunden")
-                self.start_screen(idx, screen, mon, cfg.get("chromium_flags", []))
-            if config_changed:
-                save_config(cfg)
+            self._reconcile_screens(cfg, monitors, restart_existing=True)
             self._ensure_watcher()
 
     def restart_all(self):
@@ -2329,10 +2717,17 @@ class KioskManager:
         out = {}
         with self.lock:
             processes = list(self.processes.items())
+            outputs = dict(self.process_outputs)
+            health = dict(self.window_health)
         for idx, p in processes:
-            profile_running = bool(self._profile_process_lines(idx))
-            running = p.poll() is None or profile_running
-            out[str(idx)] = {"pid": p.pid, "running": running}
+            running = self._screen_process_running(idx, p)
+            screen_health = health.get(idx, {})
+            out[str(idx)] = {
+                "pid": p.pid,
+                "running": running,
+                "output": outputs.get(idx, ""),
+                "window_visible": screen_health.get("visible"),
+            }
         return out
 
     def _watch_tick(self, cfg: dict | None = None,
@@ -2344,7 +2739,14 @@ class KioskManager:
                 desired = self._desired_running
             if not desired:
                 return
-            monitors = monitors if monitors is not None else detect_monitors()
+            if monitors is None:
+                monitors = detect_monitors()
+                if not monitor_query_succeeded():
+                    # Ein fehlgeschlagener xrandr-Aufruf ist kein
+                    # Hotplug-Ereignis. Das letzte gueltige Layout und die
+                    # laufenden Fenster bleiben unangetastet.
+                    return
+            monitors = self._prepare_monitor_layout(monitors, c)
             now = time.monotonic() if now is None else now
             layout = self._layout_signature(monitors)
             with self.lock:
@@ -2365,7 +2767,14 @@ class KioskManager:
                 log("Monitor-Layout stabilisiert: "
                     f"{self._layout_description(monitors)}. "
                     "Kiosk-Fenster werden neu zugeordnet.")
-                self.start_all(c)
+                with self.lock:
+                    self._last_monitor_layout = layout
+                    self._pending_monitor_layout = None
+                    self._pending_monitor_layout_since = 0.0
+                # Keep every window whose output is still present. Only the
+                # removed/reconnected screen is stopped or started.
+                self._reconcile_screens(
+                    c, monitors, restart_existing=False)
                 return
             if previous_layout is not None and layout != previous_layout:
                 with self.lock:
@@ -2381,35 +2790,53 @@ class KioskManager:
                 self._pending_monitor_layout_since = 0.0
             if not c.get("restart_on_crash"):
                 return
-            active_monitors = self._active_monitors(monitors)
-            enabled_count = sum(1 for s in c["screens"]
-                                if s.get("enabled", True))
-            allow_new_auto = len(active_monitors) >= enabled_count
-            reserved_outputs = set()
+            assignments = self._assign_screens(c, monitors)
+            with self.lock:
+                check_visibility = (
+                    now - self._last_visibility_check
+                    >= self.VISIBILITY_CHECK_SECONDS
+                )
             for idx, screen in enumerate(c["screens"]):
                 if not screen.get("enabled"):
                     continue
                 with self.lock:
                     p = self.processes.get(idx)
-                mon = self._pick_output(screen, monitors, idx,
-                                        allow_new_auto=allow_new_auto,
-                                        reserved_outputs=reserved_outputs)
-                if mon:
-                    reserved_outputs.add(mon["name"])
-                if p is None or p.poll() is not None:
+                mon = assignments.get(idx)
+                if mon is None:
+                    continue
+                if not self._screen_process_running(idx, p):
                     log(f"Respawn Bildschirm {idx}")
                     self.start_screen(idx, screen, mon,
                                       c.get("chromium_flags", []))
+                    continue
+                if check_visibility:
+                    visible = self._verify_screen_window(
+                        idx, mon, repair=True)
+                    if visible is False:
+                        log(f"Respawn Bildschirm {idx}: kein sichtbares "
+                            f"Fenster auf {mon['name']}")
+                        self.start_screen(
+                            idx, screen, mon,
+                            c.get("chromium_flags", []))
+            if check_visibility:
+                with self.lock:
+                    self._last_visibility_check = now
 
     def _ensure_watcher(self):
-        if self._watcher_started:
-            return
-        self._watcher_started = True
+        with self.lock:
+            if self._watcher_started:
+                return
+            self._watcher_started = True
 
         def watch():
             while True:
-                time.sleep(5)
-                self._watch_tick()
+                time.sleep(self.WATCH_INTERVAL_SECONDS)
+                try:
+                    self._watch_tick()
+                except Exception as e:
+                    # A transient xrandr/Chromium error must not permanently
+                    # disable hotplug recovery.
+                    log(f"Kiosk-Watchdog-Fehler: {e}")
 
         threading.Thread(target=watch, daemon=True).start()
 
@@ -2739,15 +3166,25 @@ def api_diagnostics():
                                       reserved_outputs=reserved_outputs)
         if target:
             reserved_outputs.add(target["name"])
-        running = status.get(str(idx), {}).get("running", False)
+        screen_status = status.get(str(idx), {})
+        running = screen_status.get("running", False)
+        current_output = screen_status.get("output", "")
+        window_visible = screen_status.get("window_visible")
         assigned_output = target.get("name") if target else ""
         assignments.append({
             "screen": screen.get("name") or f"Screen {idx + 1}",
             "configured_output": screen.get("output") or "",
             "assigned_output": assigned_output,
+            "current_output": current_output,
             "running": running,
             "process_running": running,
-            "visible_on_assigned_output": bool(running and assigned_output),
+            "window_visible": window_visible,
+            "visible_on_assigned_output": bool(
+                running
+                and assigned_output
+                and current_output == assigned_output
+                and window_visible is True
+            ),
         })
     return jsonify({
         "captured_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -3102,13 +3539,9 @@ def api_logs():
 def boot_start():
     cfg = load_config()
     if cfg.get("auto_start"):
-        while not manager._wait_for_display_monitors(timeout=90):
-            log("Kiosk-Autostart wartet weiter: kein nutzbares X11-Monitorlayout erkannt.")
-            time.sleep(10)
-        # Entfernt ggf. den sehr frueh gestarteten schwarzen Boot-Cover-Browser,
-        # bevor die echten Kiosk-Fenster aufgebaut werden.
-        manager.stop_all()
-        time.sleep(0.3)
+        # Auch ohne angeschlossenen Monitor den gewuenschten Zustand und den
+        # Watchdog aktivieren. Ein spaeter eingestecktes Display erscheint so
+        # innerhalb weniger Sekunden statt erst nach einem langen Boot-Wait.
         manager.start_all(cfg)
 
 

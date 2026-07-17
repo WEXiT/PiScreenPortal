@@ -108,7 +108,7 @@ chmod +x install.sh
 The installer handles everything:
 
 - Chromium (kiosk browser)
-- `unclutter`, `xrandr`, `xdotool`, Avahi
+- `unclutter`, `xrandr`, `xdotool`, `wmctrl`, Avahi
 - UxPlay (AirPlay receiver) – from apt or built from source
 - Python virtual environment + Flask + QR-code support
 - Sudo rules for `reboot`, `shutdown`, `nmcli`
@@ -135,6 +135,11 @@ Open in a browser:
 - **Directly on the Pi:** double-click the *PiScreenPortal* icon on the desktop
 
 That's it. Configure your screens under the *Screens* tab and hit *Save and apply*.
+
+For a permanent two-monitor setup, assign each screen to its physical HDMI
+output. PiScreenPortal watches the output layout, activates a reconnected
+display as an extended desktop, and restores only the affected Chromium window.
+The page on the monitor that remained connected keeps running.
 
 ---
 

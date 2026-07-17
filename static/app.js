@@ -73,15 +73,32 @@ function renderMonitors() {
   const tb = document.querySelector("#monitors tbody");
   tb.innerHTML = "";
   if (!monitors.length) {
-    tb.innerHTML = `<tr><td colspan="4" class="muted">${t("screens.none_detected")}</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="5" class="muted">${t("screens.none_detected")}</td></tr>`;
     return;
   }
   for (const m of monitors) {
     const tr = document.createElement("tr");
     tr.innerHTML = `<td><code>${m.name}</code></td><td>${m.primary ? t("common.yes") : ""}</td>
-      <td>${m.width} x ${m.height}</td><td>${m.x},${m.y}</td>`;
+      <td>${m.width} x ${m.height}</td><td>${m.x},${m.y}</td>
+      <td>${m.active ? t("screens.live") : t("screens.connected_waiting")}</td>`;
     tb.appendChild(tr);
   }
+}
+
+function updateLiveMonitors(nextMonitors) {
+  const next = Array.isArray(nextMonitors) ? nextMonitors : [];
+  const signature = list => JSON.stringify(list.map(m => [
+    m.name, !!m.active, m.x, m.y, m.width, m.height, m.geometry || ""
+  ]));
+  if (signature(next) === signature(monitors)) return;
+  monitors = next;
+  renderMonitors();
+  if (!cfg) return;
+  document.querySelectorAll("#screens select[data-k='output']").forEach((select, i) => {
+    const selected = (cfg.screens[i] && cfg.screens[i].output) || select.value;
+    select.innerHTML = outputOptions(selected);
+    select.value = selected;
+  });
 }
 
 function outputOptions(selected) {
@@ -627,9 +644,21 @@ function renderScreenStatus(procs) {
   cfg.screens.forEach((s, i) => {
     const p = procs[String(i)];
     const running = p && p.running;
+    const output = (p && p.output) || s.output || t("diag.unassigned");
+    let value = t("screen.inactive");
+    let cls = "warn";
+    if (running && p.window_visible === true) {
+      value = t("screen.visible", {pid: p.pid, output});
+      cls = "ok";
+    } else if (running && p.window_visible === false) {
+      value = t("screen.not_visible", {pid: p.pid, output});
+      cls = "bad";
+    } else if (running) {
+      value = t("screen.running_unverified", {pid: p.pid, output});
+      cls = "ok";
+    }
     html += tile(`${s.name || t("screens.label")+" "+(i+1)}`,
-      running ? t("screen.running", {pid: p.pid}) : t("screen.inactive"),
-      running ? "ok" : "warn");
+      value, cls);
   });
   el.innerHTML = html;
 }
@@ -640,6 +669,7 @@ async function refreshStatus() {
     renderSysinfo(s.system, "sysinfo", false);
     renderSysinfo(s.system, "sysinfo-full", true);
     renderScreenStatus(s.processes || {});
+    updateLiveMonitors(s.monitors || []);
     document.getElementById("status").textContent = JSON.stringify(s.processes, null, 2);
     const logLang = encodeURIComponent(window.I18N.lang || "en");
     const log = await fetch("/api/logs?lang=" + logLang).then(r=>r.text());
@@ -664,6 +694,8 @@ function renderDiagnosticAssignments(assignments) {
       <td><code>${escape(configured)}</code></td>
       <td>${a.assigned_output ? `<code>${escape(a.assigned_output)}</code>` : t("diag.unassigned")}</td>
       <td>${a.running ? t("common.yes") : t("common.no")}</td>
+      <td>${a.window_visible === true ? t("common.yes") :
+             a.window_visible === false ? t("common.no") : t("common.unknown")}</td>
     </tr>`;
   }).join("");
   el.innerHTML = `
@@ -674,6 +706,7 @@ function renderDiagnosticAssignments(assignments) {
         <th>${t("diag.configured")}</th>
         <th>${t("diag.assigned")}</th>
         <th>${t("diag.running")}</th>
+        <th>${t("diag.visible")}</th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
@@ -1043,11 +1076,20 @@ function translateBackendMessage(message) {
     "apt-get is not installed.": "updates.error.apt_missing",
     "Ungültige Config": "settings.error.invalid_config",
     "Ungültige JSON-Daten": "settings.error.invalid_json",
+    "Bildschirm-Konfiguration muss eine Liste sein.": "settings.error.screens_list",
+    "Ungültiger Bildschirm-Eintrag.": "settings.error.screen_entry",
     "Wenn der Zugangsschutz aktiv ist, müssen Benutzername und Passwort gesetzt sein.": "settings.error.auth_required_fields",
     "SSID fehlt": "wifi.error.ssid_missing",
     "name fehlt": "wifi.error.name_missing",
   };
-  return map[message] ? t(map[message]) : (translateBackendReason(message) || message || "");
+  if (map[message]) return t(map[message]);
+  const duplicate = String(message || "").match(
+    /^Monitor-Ausgang (.+) ist mehreren aktiven Bildschirmen zugewiesen\.$/
+  );
+  if (duplicate) {
+    return t("settings.error.duplicate_output", {output: duplicate[1]});
+  }
+  return translateBackendReason(message) || message || "";
 }
 
 function renderPower(d, list, badge) {

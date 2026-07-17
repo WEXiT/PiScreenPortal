@@ -56,7 +56,7 @@ apt_install python3 python3-venv python3-pip python3-dev \
 # --------------------------------------------------
 echo ">>> [3/7] Kiosk tools"
 # Install base tools first (without Chromium).
-apt_install x11-xserver-utils xdotool unclutter fonts-dejavu \
+apt_install x11-xserver-utils xdotool wmctrl unclutter fonts-dejavu \
             network-manager avahi-daemon avahi-utils
 
 # Chromium package names differ between distributions.

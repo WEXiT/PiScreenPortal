@@ -68,6 +68,15 @@ HEADLESS-1 connected 1920x1080+3840+0 (normal left inverted right x axis y axis)
 HDMI-A-1 connected 1920x1080+0+0 (normal left inverted right x axis y axis) 600mm x 340mm
 """
 
+XRANDR_HOTPLUG_INACTIVE_SAMPLE = """
+Screen 0: minimum 16 x 16, current 1920 x 1080, maximum 32767 x 32767
+HDMI-A-1 connected 1920x1080+0+0 (normal left inverted right x axis y axis)
+   1920x1080     60.00*+
+HDMI-A-2 connected (normal left inverted right x axis y axis)
+   1920x1080     60.00 +
+   1280x720      60.00
+"""
+
 
 class MonitorParsingTests(unittest.TestCase):
     def test_parse_xrandr_monitors_ignores_lease_outputs(self):
@@ -93,6 +102,15 @@ class MonitorParsingTests(unittest.TestCase):
         monitors = parse_xrandr_monitors(XRANDR_VIRTUAL_SAMPLE)
 
         self.assertEqual([m["name"] for m in monitors], ["HDMI-A-1"])
+
+    def test_parse_xrandr_monitors_keeps_connected_inactive_hotplug_output(self):
+        monitors = parse_xrandr_monitors(XRANDR_HOTPLUG_INACTIVE_SAMPLE)
+        inactive = next(m for m in monitors if m["name"] == "HDMI-A-2")
+
+        self.assertFalse(inactive["active"])
+        self.assertEqual(inactive["geometry"], "")
+        self.assertEqual(inactive["width"], 1920)
+        self.assertEqual(inactive["height"], 1080)
 
 
 class OutputAssignmentTests(unittest.TestCase):
@@ -158,6 +176,51 @@ class OutputAssignmentTests(unittest.TestCase):
         active = self.manager._active_monitors(monitors)
 
         self.assertEqual([m["name"] for m in active], ["HDMI-A-1"])
+
+    def test_prepare_monitor_layout_activates_inactive_hotplug_as_extended(self):
+        original_run = app_module.subprocess.run
+        original_detect_monitors = app_module.detect_monitors
+        commands = []
+        monitors = parse_xrandr_monitors(XRANDR_HOTPLUG_INACTIVE_SAMPLE)
+        refreshed = parse_xrandr_monitors(XRANDR_SAMPLE)
+
+        def fake_run(cmd, **kwargs):
+            commands.append(cmd)
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        cfg = {
+            "screens": [
+                {"enabled": True, "output": "HDMI-A-2", "rotation": "normal"},
+                {"enabled": True, "output": "HDMI-A-1", "rotation": "normal"},
+            ]
+        }
+        try:
+            app_module.subprocess.run = fake_run
+            app_module.detect_monitors = lambda: refreshed
+            result = self.manager._prepare_monitor_layout(monitors, cfg)
+        finally:
+            app_module.subprocess.run = original_run
+            app_module.detect_monitors = original_detect_monitors
+
+        self.assertEqual(result, refreshed)
+        self.assertEqual(commands, [[
+            "xrandr",
+            "--output", "HDMI-A-2", "--auto", "--rotate", "normal",
+            "--pos", "0x0",
+            "--output", "HDMI-A-1", "--auto", "--rotate", "normal",
+            "--right-of", "HDMI-A-2",
+        ]])
+
+    def test_config_rejects_duplicate_enabled_monitor_outputs(self):
+        config, error = app_module.validate_config_payload({
+            "screens": [
+                {"enabled": True, "output": "HDMI-A-1"},
+                {"enabled": True, "output": "HDMI-A-1"},
+            ]
+        })
+
+        self.assertIsNone(config)
+        self.assertIn("HDMI-A-1", error)
 
     def test_start_all_persists_complete_automatic_assignment(self):
         saved_configs = []
@@ -357,6 +420,30 @@ class OutputAssignmentTests(unittest.TestCase):
         self.assertEqual(cfg["screens"][1]["output"], "HDMI-A-2")
         self.assertEqual(len(saved_configs), 1)
 
+    def test_automatic_before_explicit_does_not_steal_reserved_output(self):
+        original_save_config = app_module.save_config
+        saved_configs = []
+        cfg = {
+            "screens": [
+                {"name": "Automatic", "enabled": True, "output": "",
+                 "hide_cursor": False, "url": "http://auto"},
+                {"name": "Fixed", "enabled": True, "output": "HDMI-A-2",
+                 "hide_cursor": False, "url": "http://fixed"},
+            ],
+            "chromium_flags": [],
+        }
+        try:
+            app_module.save_config = lambda value: saved_configs.append(value)
+
+            assignments = self.manager._assign_screens(cfg, self.monitors)
+        finally:
+            app_module.save_config = original_save_config
+
+        self.assertEqual(assignments[0]["name"], "HDMI-A-1")
+        self.assertEqual(assignments[1]["name"], "HDMI-A-2")
+        self.assertEqual(cfg["screens"][0]["output"], "HDMI-A-1")
+        self.assertEqual(len(saved_configs), 1)
+
     def test_start_all_does_not_start_two_screens_on_same_explicit_output(self):
         original_detect_monitors = app_module.detect_monitors
 
@@ -493,6 +580,71 @@ class ReloadTests(unittest.TestCase):
         self.assertIn("--ozone-platform=x11", captured[0])
         self.assertIn("--disable-gpu", captured[0])
 
+    def test_start_screen_uses_geometry_refreshed_after_rotation(self):
+        original_popen = app_module.subprocess.Popen
+        original_detect_monitors = app_module.detect_monitors
+        captured_commands = []
+        positioned = []
+
+        class FakeProcess:
+            pid = 1234
+
+            def poll(self):
+                return None
+
+        class RecordingManager(KioskManager):
+            def stop_screen(self, idx):
+                pass
+
+            def _apply_rotation(self, output, rotation):
+                pass
+
+            def _chromium_bin(self):
+                return "chromium"
+
+            def _profile_dir(self, idx):
+                return f"profile-{idx}"
+
+            def _start_reload_thread(self, idx, interval, pid):
+                pass
+
+            def _position_screen_window(self, idx, pid, monitor):
+                positioned.append(dict(monitor))
+                return True
+
+            def _env(self):
+                return {}
+
+        rotated_monitor = {
+            "name": "HDMI-A-1", "active": True, "primary": True,
+            "x": 0, "y": 0, "width": 1080, "height": 1920,
+            "geometry": "1080x1920+0+0",
+        }
+
+        def fake_popen(cmd, **kwargs):
+            captured_commands.append(cmd)
+            return FakeProcess()
+
+        try:
+            app_module.subprocess.Popen = fake_popen
+            app_module.detect_monitors = lambda: [rotated_monitor]
+            manager = RecordingManager()
+            manager.start_screen(
+                0,
+                {"name": "Portrait", "enabled": True, "url": "http://portrait",
+                 "rotation": "left", "zoom": 1, "reload_interval": 0},
+                {"name": "HDMI-A-1", "active": True, "x": 0, "y": 0,
+                 "width": 1920, "height": 1080},
+                [],
+            )
+        finally:
+            app_module.subprocess.Popen = original_popen
+            app_module.detect_monitors = original_detect_monitors
+
+        self.assertIn("--window-size=1080,1920", captured_commands[0])
+        self.assertEqual(positioned[0]["width"], 1080)
+        self.assertEqual(positioned[0]["height"], 1920)
+
     def test_start_screen_repositions_x11_window_after_launch(self):
         original_popen = app_module.subprocess.Popen
         original_run = app_module.subprocess.run
@@ -590,6 +742,56 @@ class ReloadTests(unittest.TestCase):
         self.assertIn(["xdotool", "windowsize", "701", "1920", "1080"], commands)
         self.assertNotIn(["xdotool", "windowmove", "700", "0", "0"], commands)
 
+    def test_window_reposition_temporarily_removes_fullscreen_with_wmctrl(self):
+        original_run = app_module.subprocess.run
+        original_which = app_module.shutil.which
+        commands = []
+
+        class RecordingManager(KioskManager):
+            def _env(self):
+                return {}
+
+        def fake_run(cmd, **kwargs):
+            commands.append(cmd)
+            if cmd[:3] == ["xdotool", "search", "--pid"]:
+                return SimpleNamespace(
+                    returncode=0, stdout=b"777\n", stderr=b"")
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        try:
+            app_module.subprocess.run = fake_run
+            app_module.shutil.which = lambda name: (
+                f"/usr/bin/{name}" if name in ("xdotool", "wmctrl") else None)
+            manager = RecordingManager()
+
+            manager._position_screen_window(
+                0,
+                4321,
+                {"name": "HDMI-A-2", "x": 1920, "y": 0,
+                 "width": 1920, "height": 1080},
+            )
+        finally:
+            app_module.subprocess.run = original_run
+            app_module.shutil.which = original_which
+
+        wm_id = "0x309"
+        self.assertIn(
+            ["wmctrl", "-ir", wm_id, "-b", "remove,fullscreen"],
+            commands,
+        )
+        self.assertIn(
+            ["wmctrl", "-ir", wm_id, "-e", "0,1920,0,1920,1080"],
+            commands,
+        )
+        self.assertIn(
+            ["wmctrl", "-ir", wm_id, "-b", "add,fullscreen"],
+            commands,
+        )
+        self.assertNotIn(
+            ["xdotool", "windowmove", "777", "1920", "0"],
+            commands,
+        )
+
     def test_reload_targets_only_kiosk_profile_windows(self):
         original_which = app_module.shutil.which
         original_window_ids = app_module._chromium_window_ids
@@ -627,21 +829,177 @@ class ReloadTests(unittest.TestCase):
 
 
 class WatcherTests(unittest.TestCase):
+    def test_watch_tick_ignores_failed_xrandr_query(self):
+        class RecordingManager(KioskManager):
+            def _prepare_monitor_layout(self, monitors, cfg=None):
+                raise AssertionError("failed query must not alter layout")
+
+        manager = RecordingManager()
+        monitors = parse_xrandr_monitors(XRANDR_SAMPLE)
+        cfg = {"restart_on_crash": True, "screens": [],
+               "chromium_flags": []}
+        original_detect_monitors = app_module.detect_monitors
+
+        def failed_query():
+            return []
+
+        failed_query.last_query_ok = False
+        try:
+            app_module.detect_monitors = failed_query
+            with manager.lock:
+                manager._desired_running = True
+                manager._last_monitor_layout = manager._layout_signature(
+                    monitors)
+
+            manager._watch_tick(cfg, now=20.0)
+        finally:
+            app_module.detect_monitors = original_detect_monitors
+
+        self.assertEqual(
+            manager._last_monitor_layout,
+            manager._layout_signature(monitors),
+        )
+        self.assertIsNone(manager._pending_monitor_layout)
+
+    def test_hotplug_reconcile_keeps_still_connected_screen_running(self):
+        class LiveProcess:
+            pid = 100
+
+            def poll(self):
+                return None
+
+        class RecordingManager(KioskManager):
+            def __init__(self):
+                super().__init__()
+                self.started = []
+                self.verified = []
+
+            def start_screen(self, idx, screen, monitor, flags):
+                self.started.append((idx, monitor))
+
+            def _verify_screen_window(self, idx, monitor, repair=True):
+                self.verified.append((idx, monitor["name"]))
+                return True
+
+            def _start_unclutter(self):
+                pass
+
+            def _stop_unclutter(self):
+                pass
+
+        manager = RecordingManager()
+        two_monitors = parse_xrandr_monitors(XRANDR_SAMPLE)
+        cfg = {
+            "screens": [
+                {"name": "Links", "enabled": True, "output": "HDMI-A-2",
+                 "hide_cursor": False, "url": "http://left"},
+                {"name": "Rechts", "enabled": True, "output": "HDMI-A-1",
+                 "hide_cursor": False, "url": "http://right"},
+            ],
+            "chromium_flags": [],
+        }
+        manager.processes = {0: LiveProcess(), 1: LiveProcess()}
+        manager.process_outputs = {0: "HDMI-A-2", 1: "HDMI-A-1"}
+
+        manager._reconcile_screens(
+            cfg, [two_monitors[0]], restart_existing=False)
+
+        self.assertEqual(manager.verified, [(0, "HDMI-A-2")])
+        self.assertEqual(manager.started, [(1, None)])
+
+    def test_watch_tick_accepts_chromium_profile_after_launcher_pid_exits(self):
+        class ExitedLauncher:
+            pid = 100
+
+            def poll(self):
+                return 0
+
+        class RecordingManager(KioskManager):
+            def __init__(self):
+                super().__init__()
+                self.started = []
+
+            def _profile_process_lines(self, idx):
+                return ["200 /usr/lib/chromium/chromium chromium-profile-0"]
+
+            def _verify_screen_window(self, idx, monitor, repair=True):
+                return True
+
+            def start_screen(self, idx, screen, monitor, flags):
+                self.started.append(idx)
+
+        manager = RecordingManager()
+        monitors = parse_xrandr_monitors(XRANDR_SAMPLE)
+        cfg = {
+            "restart_on_crash": True,
+            "screens": [
+                {"name": "Links", "enabled": True, "output": "HDMI-A-2",
+                 "hide_cursor": False, "url": "http://left"},
+            ],
+            "chromium_flags": [],
+        }
+        manager.processes = {0: ExitedLauncher()}
+        manager.process_outputs = {0: "HDMI-A-2"}
+        with manager.lock:
+            manager._desired_running = True
+            manager._last_monitor_layout = manager._layout_signature(monitors)
+
+        manager._watch_tick(cfg, monitors, now=20.0)
+
+        self.assertEqual(manager.started, [])
+
+    def test_watch_tick_respawns_live_process_without_visible_window(self):
+        class LiveProcess:
+            pid = 100
+
+            def poll(self):
+                return None
+
+        class RecordingManager(KioskManager):
+            def __init__(self):
+                super().__init__()
+                self.started = []
+
+            def _verify_screen_window(self, idx, monitor, repair=True):
+                return False
+
+            def start_screen(self, idx, screen, monitor, flags):
+                self.started.append((idx, monitor["name"]))
+
+        manager = RecordingManager()
+        monitors = parse_xrandr_monitors(XRANDR_SAMPLE)
+        cfg = {
+            "restart_on_crash": True,
+            "screens": [
+                {"name": "Links", "enabled": True, "output": "HDMI-A-2",
+                 "hide_cursor": False, "url": "http://left"},
+            ],
+            "chromium_flags": [],
+        }
+        manager.processes = {0: LiveProcess()}
+        manager.process_outputs = {0: "HDMI-A-2"}
+        with manager.lock:
+            manager._desired_running = True
+            manager._last_monitor_layout = manager._layout_signature(monitors)
+
+        manager._watch_tick(cfg, monitors, now=20.0)
+
+        self.assertEqual(manager.started, [(0, "HDMI-A-2")])
+
     def test_watch_tick_waits_for_hotplug_layout_to_stabilize(self):
         class RecordingManager(KioskManager):
             HOTPLUG_STABLE_SECONDS = 4.0
 
             def __init__(self):
                 super().__init__()
-                self.restart_count = 0
+                self.reconciled_layouts = []
 
-            def start_all(self, cfg=None):
-                self.restart_count += 1
-                with self.lock:
-                    self._last_monitor_layout = self._layout_signature(
-                        app_module.detect_monitors())
-                    self._pending_monitor_layout = None
-                    self._pending_monitor_layout_since = 0.0
+            def _reconcile_screens(self, cfg, monitors,
+                                   restart_existing=False):
+                self.reconciled_layouts.append((
+                    [monitor["name"] for monitor in monitors],
+                    restart_existing,
+                ))
 
         manager = RecordingManager()
         two_monitors = parse_xrandr_monitors(XRANDR_SAMPLE)
@@ -658,17 +1016,20 @@ class WatcherTests(unittest.TestCase):
 
             current_monitors["value"] = one_monitor
             manager._watch_tick(cfg, one_monitor, now=10.0)
-            self.assertEqual(manager.restart_count, 0)
+            self.assertEqual(manager.reconciled_layouts, [])
 
             current_monitors["value"] = two_monitors
             manager._watch_tick(cfg, two_monitors, now=15.0)
-            self.assertEqual(manager.restart_count, 0)
+            self.assertEqual(manager.reconciled_layouts, [])
 
             manager._watch_tick(cfg, two_monitors, now=20.0)
         finally:
             app_module.detect_monitors = original_detect_monitors
 
-        self.assertEqual(manager.restart_count, 1)
+        self.assertEqual(
+            manager.reconciled_layouts,
+            [(["HDMI-A-2", "HDMI-A-1"], False)],
+        )
 
     def test_watch_tick_does_not_respawn_two_screens_on_same_explicit_output(self):
         class RecordingManager(KioskManager):
@@ -697,8 +1058,8 @@ class WatcherTests(unittest.TestCase):
 
         manager._watch_tick(cfg, monitors)
 
+        self.assertEqual(len(manager.started), 1)
         self.assertEqual(manager.started[0][1]["name"], "HDMI-A-1")
-        self.assertIsNone(manager.started[1][1])
 
     def test_watch_tick_respawns_under_apply_lock(self):
         class RecordingLock:
