@@ -5,6 +5,7 @@ auf einem Raspberry Pi mit mehreren Monitoren.
 """
 from __future__ import annotations
 
+import hashlib
 import hmac
 import io
 import json
@@ -33,9 +34,16 @@ except ImportError:
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = BASE_DIR / "config.json"
 LOG_FILE = BASE_DIR / "kiosk.log"
+DISPLAY_CACHE_FILE = BASE_DIR / "display_cache.json"
 MAINTENANCE_STATE_FILE = BASE_DIR / "maintenance_state.json"
 VERSION_FILE = BASE_DIR / "VERSION"
 GIT_REMOTE_URL = "https://github.com/WEXiT/PiScreenPortal.git"
+LOG_MAX_BYTES = 2 * 1024 * 1024
+LOG_BACKUP_COUNT = 3
+DISPLAY_CACHE_VERSION = 1
+LOG_LOCK = threading.Lock()
+DISPLAY_CACHE_LOCK = threading.Lock()
+_last_display_cache_signature = None
 
 
 def default_xauthority() -> str:
@@ -298,12 +306,40 @@ def save_config(cfg: dict) -> None:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
 
 
+def _rotated_log_path(index: int) -> Path:
+    return LOG_FILE.with_name(f"{LOG_FILE.name}.{index}")
+
+
+def _rotate_log_if_needed(incoming_bytes: int) -> None:
+    try:
+        current_size = LOG_FILE.stat().st_size if LOG_FILE.exists() else 0
+        if current_size + incoming_bytes <= LOG_MAX_BYTES:
+            return
+        if LOG_BACKUP_COUNT <= 0:
+            LOG_FILE.unlink(missing_ok=True)
+            return
+        _rotated_log_path(LOG_BACKUP_COUNT).unlink(missing_ok=True)
+        for index in range(LOG_BACKUP_COUNT - 1, 0, -1):
+            source = _rotated_log_path(index)
+            if source.exists():
+                os.replace(source, _rotated_log_path(index + 1))
+        if LOG_FILE.exists():
+            os.replace(LOG_FILE, _rotated_log_path(1))
+    except OSError:
+        # Logging must never take down the kiosk. If rotation fails, the
+        # current append is still attempted below.
+        pass
+
+
 def log(msg: str) -> None:
     line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
     print(line, flush=True)
     try:
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        encoded_size = len((line + "\n").encode("utf-8"))
+        with LOG_LOCK:
+            _rotate_log_if_needed(encoded_size)
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
     except Exception:
         pass
 
@@ -396,7 +432,10 @@ def logs_for_language(text: str, lang: str) -> str:
 
 # ---------------------- Monitor-Erkennung ---------------------- #
 XRANDR_GEOMETRY_RE = re.compile(r"\b(\d+)x(\d+)\+(-?\d+)\+(-?\d+)\b")
-XRANDR_MODE_RE = re.compile(r"^\s+(\d+)x(\d+)(?:i)?\s")
+XRANDR_MODE_LINE_RE = re.compile(
+    r"^\s+([A-Za-z0-9_.+-]*\d+x\d+[A-Za-z0-9_.+-]*)\s+(.+)$")
+XRANDR_EDID_LINE_RE = re.compile(r"^\s*([0-9A-Fa-f]{32})\s*$")
+CACHE_MODE_RE = re.compile(r"^[A-Za-z0-9_.+-]{1,64}$")
 VIRTUAL_OUTPUT_PREFIXES = (
     "lease-",
     "virtual",
@@ -416,9 +455,27 @@ def is_physical_output_name(name: str) -> bool:
 def parse_xrandr_monitors(output: str) -> list:
     monitors = []
     current_monitor = None
+    collecting_edid = False
+    edid_lines = []
+
+    def finish_edid() -> None:
+        nonlocal collecting_edid, edid_lines
+        if current_monitor is not None and edid_lines:
+            encoded = "".join(edid_lines)
+            try:
+                raw = bytes.fromhex(encoded)
+                if len(raw) >= 128 and len(raw) % 128 == 0:
+                    current_monitor["edid_hash"] = hashlib.sha256(
+                        raw).hexdigest()
+            except ValueError:
+                pass
+        collecting_edid = False
+        edid_lines = []
+
     for line in (output or "").splitlines():
         parts = line.split()
         if len(parts) >= 2 and parts[1] in ("connected", "disconnected"):
+            finish_edid()
             current_monitor = None
         if len(parts) >= 2 and parts[1] == "connected":
             name = parts[0]
@@ -442,17 +499,59 @@ def parse_xrandr_monitors(output: str) -> list:
                 "height": h,
                 "geometry": geometry,
                 "active": active,
+                "mode": f"{w}x{h}" if active else "",
+                "rate": None,
+                "preferred_mode": "",
+                "available_modes": [],
+                "edid_hash": "",
             }
             monitors.append(current_monitor)
             continue
-        # Ein frisch eingesteckter Ausgang ist oft bereits "connected", hat
-        # aber noch keine Geometrie. Die erste angebotene Aufloesung hilft der
-        # Anzeige und wird nach `xrandr --auto` durch die echte ersetzt.
-        if current_monitor is not None and not current_monitor["active"]:
-            mode = XRANDR_MODE_RE.match(line)
-            if mode and not current_monitor["width"]:
-                current_monitor["width"], current_monitor["height"] = map(
-                    int, mode.groups())
+        if current_monitor is None:
+            continue
+        if re.match(r"^\s+EDID:\s*$", line):
+            collecting_edid = True
+            edid_lines = []
+            continue
+        if collecting_edid:
+            edid_match = XRANDR_EDID_LINE_RE.match(line)
+            if edid_match:
+                edid_lines.append(edid_match.group(1))
+                continue
+            finish_edid()
+
+        mode_line = XRANDR_MODE_LINE_RE.match(line)
+        if not mode_line:
+            continue
+        mode_name, raw_rates = mode_line.groups()
+        rates = []
+        current_rate = None
+        preferred = False
+        for token in raw_rates.split():
+            cleaned = token.rstrip("*+#")
+            try:
+                rate = float(cleaned)
+            except ValueError:
+                continue
+            rates.append(rate)
+            if "*" in token:
+                current_rate = rate
+            if "+" in token:
+                preferred = True
+        current_monitor["available_modes"].append({
+            "name": mode_name,
+            "rates": rates,
+        })
+        dimensions = re.search(r"(\d+)x(\d+)", mode_name)
+        if dimensions and not current_monitor["width"]:
+            current_monitor["width"], current_monitor["height"] = map(
+                int, dimensions.groups())
+        if preferred and not current_monitor["preferred_mode"]:
+            current_monitor["preferred_mode"] = mode_name
+        if current_rate is not None:
+            current_monitor["mode"] = mode_name
+            current_monitor["rate"] = current_rate
+    finish_edid()
     monitors.sort(key=lambda m: (
         not m["active"], m["x"], m["name"].lower()))
     return monitors
@@ -462,7 +561,7 @@ def detect_monitors() -> list:
     env = display_env()
     try:
         out = subprocess.check_output(
-            ["xrandr", "--query"], env=env, stderr=subprocess.STDOUT, timeout=5
+            ["xrandr", "--prop"], env=env, stderr=subprocess.STDOUT, timeout=5
         ).decode("utf-8", errors="ignore")
     except Exception as e:
         detect_monitors.last_query_ok = False
@@ -470,7 +569,9 @@ def detect_monitors() -> list:
         return []
 
     detect_monitors.last_query_ok = True
-    return parse_xrandr_monitors(out)
+    monitors = parse_xrandr_monitors(out)
+    update_display_mode_cache(monitors)
+    return monitors
 
 
 detect_monitors.last_query_ok = True
@@ -481,6 +582,147 @@ def monitor_query_succeeded() -> bool:
     # einfache Funktion. Fehlt dort das Attribut, gilt der gelieferte Wert als
     # erfolgreicher Query.
     return bool(getattr(detect_monitors, "last_query_ok", True))
+
+
+def _empty_display_cache() -> dict:
+    return {"version": DISPLAY_CACHE_VERSION, "outputs": {}, "edids": {}}
+
+
+def _read_display_cache_unlocked() -> dict:
+    try:
+        data = json.loads(DISPLAY_CACHE_FILE.read_text(encoding="utf-8"))
+        if (not isinstance(data, dict)
+                or data.get("version") != DISPLAY_CACHE_VERSION
+                or not isinstance(data.get("outputs"), dict)
+                or not isinstance(data.get("edids"), dict)):
+            return _empty_display_cache()
+        return data
+    except (OSError, ValueError, TypeError):
+        return _empty_display_cache()
+
+
+def _write_display_cache_unlocked(data: dict) -> bool:
+    temp_file = DISPLAY_CACHE_FILE.with_name(
+        f".{DISPLAY_CACHE_FILE.name}.tmp")
+    try:
+        temp_file.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temp_file, DISPLAY_CACHE_FILE)
+        return True
+    except OSError:
+        try:
+            temp_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+
+def _display_cache_record(monitor: dict) -> dict | None:
+    mode = str(monitor.get("mode") or "").strip()
+    if (not monitor.get("active") or not CACHE_MODE_RE.fullmatch(mode)
+            or monitor.get("width", 0) <= 0
+            or monitor.get("height", 0) <= 0):
+        return None
+    try:
+        rate = float(monitor.get("rate")) if monitor.get("rate") else None
+    except (TypeError, ValueError):
+        rate = None
+    if rate is not None and not 1 <= rate <= 1000:
+        rate = None
+    return {
+        "edid_hash": str(monitor.get("edid_hash") or ""),
+        "mode": mode,
+        "rate": rate,
+        "width": int(monitor["width"]),
+        "height": int(monitor["height"]),
+    }
+
+
+def update_display_mode_cache(monitors: list, force: bool = False) -> bool:
+    """Persistiert nur bestaetigte aktive Modi und vermeidet SD-Dauerwrites."""
+    global _last_display_cache_signature
+    signature = tuple(
+        (m.get("name"), m.get("active"), m.get("edid_hash"),
+         m.get("mode"), m.get("rate"), m.get("width"), m.get("height"))
+        for m in monitors
+    )
+    with DISPLAY_CACHE_LOCK:
+        if not force and signature == _last_display_cache_signature:
+            return False
+        data = _read_display_cache_unlocked()
+        changed = False
+        for monitor in monitors:
+            name = str(monitor.get("name") or "").strip()
+            record = _display_cache_record(monitor)
+            if not name or record is None:
+                continue
+            previous = data["outputs"].get(name, {})
+            comparable = {key: previous.get(key) for key in record}
+            if comparable != record:
+                data["outputs"][name] = {
+                    **record,
+                    "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                }
+                changed = True
+            edid_hash = record["edid_hash"]
+            if edid_hash:
+                edid_record = {**record, "output": name}
+                previous_edid = data["edids"].get(edid_hash, {})
+                comparable_edid = {
+                    key: previous_edid.get(key) for key in edid_record
+                }
+                if comparable_edid != edid_record:
+                    data["edids"][edid_hash] = {
+                        **edid_record,
+                        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    }
+                    changed = True
+        if changed and not _write_display_cache_unlocked(data):
+            return False
+        _last_display_cache_signature = signature
+        return changed
+
+
+def cached_display_mode(monitor: dict) -> dict | None:
+    """Liefert einen zum aktuellen EDID/Output passenden, validierten Modus."""
+    with DISPLAY_CACHE_LOCK:
+        data = _read_display_cache_unlocked()
+    edid_hash = str(monitor.get("edid_hash") or "")
+    record = data["edids"].get(edid_hash) if edid_hash else None
+    if not isinstance(record, dict):
+        output_record = data["outputs"].get(str(monitor.get("name") or ""))
+        if isinstance(output_record, dict):
+            cached_edid = str(output_record.get("edid_hash") or "")
+            if not edid_hash or not cached_edid or edid_hash == cached_edid:
+                record = output_record
+    if not isinstance(record, dict):
+        return None
+    mode = str(record.get("mode") or "").strip()
+    if not CACHE_MODE_RE.fullmatch(mode):
+        return None
+    advertised = {
+        str(item.get("name") or ""): item
+        for item in monitor.get("available_modes", [])
+        if isinstance(item, dict)
+    }
+    if advertised and mode not in advertised:
+        return None
+    try:
+        rate = float(record.get("rate")) if record.get("rate") else None
+    except (TypeError, ValueError):
+        rate = None
+    if rate is not None and not 1 <= rate <= 1000:
+        rate = None
+    advertised_rates = advertised.get(mode, {}).get("rates", [])
+    if (rate is not None and advertised_rates
+            and not any(abs(rate - candidate) < 0.02
+                        for candidate in advertised_rates)):
+        # Der Modus ist noch gueltig, die Bildrate aber nicht. Ohne --rate
+        # darf xrandr die beste aktuell angebotene Bildrate auswaehlen.
+        rate = None
+    return {"mode": mode, "rate": rate}
 
 
 # ---------------------- System-Info ---------------------- #
@@ -2108,26 +2350,57 @@ class KioskManager:
             if output in output_names and rotation in (
                     "normal", "left", "right", "inverted"):
                 rotations[output] = rotation
-        cmd = ["xrandr"]
-        previous = None
-        for output in output_names:
-            cmd.extend(["--output", output, "--auto", "--rotate",
-                        rotations.get(output, "normal")])
-            if previous is None:
-                cmd.extend(["--pos", "0x0"])
-            else:
-                cmd.extend(["--right-of", previous])
-            previous = output
+        monitors_by_name = {m["name"]: m for m in monitors}
+
+        def build_command(use_cache: bool) -> tuple[list, list[str]]:
+            command = ["xrandr"]
+            cached_outputs = []
+            previous = None
+            for output in output_names:
+                command.extend(["--output", output])
+                cached = (
+                    cached_display_mode(monitors_by_name.get(output, {}))
+                    if use_cache else None
+                )
+                if cached:
+                    command.extend(["--mode", cached["mode"]])
+                    if cached.get("rate") is not None:
+                        command.extend(["--rate", f"{cached['rate']:g}"])
+                    cached_outputs.append(output)
+                else:
+                    command.append("--auto")
+                command.extend(["--rotate", rotations.get(output, "normal")])
+                if previous is None:
+                    command.extend(["--pos", "0x0"])
+                else:
+                    command.extend(["--right-of", previous])
+                previous = output
+            return command, cached_outputs
+
+        cmd, cached_outputs = build_command(use_cache=True)
         try:
             result = subprocess.run(
                 cmd, env=self._env(), capture_output=True, timeout=12)
+            if result.returncode != 0 and cached_outputs:
+                log("Gespeicherter Monitor-Modus wurde abgelehnt; "
+                    "Fallback auf xrandr --auto: "
+                    + ", ".join(cached_outputs))
+                cmd, _ = build_command(use_cache=False)
+                cached_outputs = []
+                result = subprocess.run(
+                    cmd, env=self._env(), capture_output=True, timeout=12)
             if result.returncode != 0:
                 error = (result.stderr + result.stdout).decode(
                     "utf-8", "ignore").strip()
                 log("Monitor-Layout konnte nicht aktiviert werden: "
                     f"{error or f'Exit-Code {result.returncode}'}")
                 return monitors
-            log("Monitor-Layout aktiviert: " + ", ".join(output_names))
+            cache_note = (
+                " (Cache: " + ", ".join(cached_outputs) + ")"
+                if cached_outputs else ""
+            )
+            log("Monitor-Layout aktiviert: "
+                + ", ".join(output_names) + cache_note)
             refreshed = detect_monitors()
             return refreshed if monitor_query_succeeded() else monitors
         except Exception as e:
@@ -3143,10 +3416,11 @@ def _diagnostic_command_output(cmd: list[str], env: dict | None = None) -> str:
 
 
 def _diagnostic_log_tail(lines: int = 100) -> str:
-    if not LOG_FILE.exists():
-        return "(kiosk.log does not exist yet)"
     try:
-        content = LOG_FILE.read_text(encoding="utf-8", errors="replace")
+        with LOG_LOCK:
+            if not LOG_FILE.exists():
+                return "(kiosk.log does not exist yet)"
+            content = LOG_FILE.read_text(encoding="utf-8", errors="replace")
         return "\n".join(content.splitlines()[-lines:]) or "(empty)"
     except OSError as e:
         return f"(could not read kiosk.log: {e})"
@@ -3528,10 +3802,14 @@ def api_presentation_stop():
 @app.route("/api/logs")
 @requires_auth
 def api_logs():
-    if not LOG_FILE.exists():
+    try:
+        with LOG_LOCK:
+            if not LOG_FILE.exists():
+                return ""
+            with open(LOG_FILE, "r", encoding="utf-8") as f:
+                text = f.read()[-20000:]
+    except OSError:
         return ""
-    with open(LOG_FILE, "r", encoding="utf-8") as f:
-        text = f.read()[-20000:]
     return logs_for_language(text, request.args.get("lang", ""))
 
 

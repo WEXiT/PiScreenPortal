@@ -3,6 +3,9 @@ __pycache__/
 venv/
 config.json
 kiosk.log
+kiosk.log.*
+display_cache.json
+.display_cache.json.tmp
 maintenance_state.json
 .secret_key
 chromium-profile-*/

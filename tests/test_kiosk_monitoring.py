@@ -1,5 +1,10 @@
+import hashlib
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from unittest.mock import patch
 
 
 try:
@@ -77,6 +82,22 @@ HDMI-A-2 connected (normal left inverted right x axis y axis)
    1280x720      60.00
 """
 
+XRANDR_EDID_SAMPLE = """
+Screen 0: minimum 16 x 16, current 1920 x 1080, maximum 32767 x 32767
+HDMI-A-1 connected 1920x1080+0+0 (normal left inverted right x axis y axis)
+    EDID:
+        00000000000000000000000000000000
+        00000000000000000000000000000000
+        00000000000000000000000000000000
+        00000000000000000000000000000000
+        00000000000000000000000000000000
+        00000000000000000000000000000000
+        00000000000000000000000000000000
+        00000000000000000000000000000000
+   1920x1080     59.94*+
+   1280x720      60.00
+"""
+
 
 class MonitorParsingTests(unittest.TestCase):
     def test_parse_xrandr_monitors_ignores_lease_outputs(self):
@@ -112,9 +133,146 @@ class MonitorParsingTests(unittest.TestCase):
         self.assertEqual(inactive["width"], 1920)
         self.assertEqual(inactive["height"], 1080)
 
+    def test_parse_xrandr_properties_reads_edid_mode_and_rate(self):
+        monitor = parse_xrandr_monitors(XRANDR_EDID_SAMPLE)[0]
+
+        self.assertEqual(
+            monitor["edid_hash"], hashlib.sha256(bytes(128)).hexdigest())
+        self.assertEqual(monitor["mode"], "1920x1080")
+        self.assertEqual(monitor["rate"], 59.94)
+        self.assertEqual(monitor["preferred_mode"], "1920x1080")
+        self.assertEqual(
+            [item["name"] for item in monitor["available_modes"]],
+            ["1920x1080", "1280x720"],
+        )
+
+    def test_detect_monitors_queries_properties_and_updates_cache(self):
+        with (
+            patch.object(
+                app_module.subprocess,
+                "check_output",
+                return_value=XRANDR_EDID_SAMPLE.encode("utf-8"),
+            ) as check_output,
+            patch.object(app_module, "update_display_mode_cache") as update_cache,
+        ):
+            monitors = app_module.detect_monitors()
+
+        self.assertEqual(
+            check_output.call_args.args[0], ["xrandr", "--prop"])
+        update_cache.assert_called_once_with(monitors)
+
+
+class DisplayModeCacheTests(unittest.TestCase):
+    def setUp(self):
+        self.cache_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.cache_dir.cleanup)
+        self.cache_file_patcher = patch.object(
+            app_module,
+            "DISPLAY_CACHE_FILE",
+            Path(self.cache_dir.name) / "display_cache.json",
+        )
+        self.cache_file_patcher.start()
+        self.addCleanup(self.cache_file_patcher.stop)
+        original_signature = app_module._last_display_cache_signature
+        app_module._last_display_cache_signature = None
+        self.addCleanup(
+            setattr,
+            app_module,
+            "_last_display_cache_signature",
+            original_signature,
+        )
+        self.monitor = parse_xrandr_monitors(XRANDR_EDID_SAMPLE)[0]
+
+    def test_cache_persists_confirmed_mode_and_reuses_it_by_edid(self):
+        changed = app_module.update_display_mode_cache(
+            [self.monitor], force=True)
+
+        self.assertTrue(changed)
+        data = json.loads(app_module.DISPLAY_CACHE_FILE.read_text("utf-8"))
+        self.assertEqual(
+            data["outputs"]["HDMI-A-1"]["mode"], "1920x1080")
+        reconnected = dict(self.monitor)
+        reconnected.update({"name": "HDMI-A-9", "active": False})
+        self.assertEqual(
+            app_module.cached_display_mode(reconnected),
+            {"mode": "1920x1080", "rate": 59.94},
+        )
+        self.assertFalse(app_module.update_display_mode_cache([self.monitor]))
+
+    def test_cache_rejects_output_record_for_different_edid(self):
+        app_module.update_display_mode_cache([self.monitor], force=True)
+        replacement = dict(self.monitor)
+        replacement["edid_hash"] = "f" * 64
+
+        self.assertIsNone(app_module.cached_display_mode(replacement))
+
+    def test_cache_rejects_mode_that_is_no_longer_advertised(self):
+        app_module.update_display_mode_cache([self.monitor], force=True)
+        changed_modes = dict(self.monitor)
+        changed_modes["available_modes"] = [
+            {"name": "1280x720", "rates": [60.0]},
+        ]
+
+        self.assertIsNone(app_module.cached_display_mode(changed_modes))
+
+    def test_cache_drops_stale_rate_but_keeps_valid_mode(self):
+        app_module.update_display_mode_cache([self.monitor], force=True)
+        changed_rates = dict(self.monitor)
+        changed_rates["available_modes"] = [
+            {"name": "1920x1080", "rates": [50.0]},
+        ]
+
+        self.assertEqual(
+            app_module.cached_display_mode(changed_rates),
+            {"mode": "1920x1080", "rate": None},
+        )
+
+    def test_corrupt_cache_is_ignored(self):
+        app_module.DISPLAY_CACHE_FILE.write_text("{broken", encoding="utf-8")
+
+        self.assertIsNone(app_module.cached_display_mode(self.monitor))
+
+
+class LogRotationTests(unittest.TestCase):
+    def test_log_rotates_before_limit_and_caps_backup_count(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_file = Path(temp_dir) / "kiosk.log"
+            with (
+                patch.object(app_module, "LOG_FILE", log_file),
+                patch.object(app_module, "LOG_MAX_BYTES", 100),
+                patch.object(app_module, "LOG_BACKUP_COUNT", 2),
+            ):
+                for label in ("first", "second", "third", "fourth"):
+                    app_module.log(label + "-" + "x" * 50)
+
+                self.assertIn("fourth-", log_file.read_text("utf-8"))
+                self.assertIn(
+                    "third-", (Path(temp_dir) / "kiosk.log.1").read_text("utf-8"))
+                self.assertIn(
+                    "second-", (Path(temp_dir) / "kiosk.log.2").read_text("utf-8"))
+                self.assertFalse((Path(temp_dir) / "kiosk.log.3").exists())
+                combined = "".join(
+                    path.read_text("utf-8")
+                    for path in (
+                        log_file,
+                        Path(temp_dir) / "kiosk.log.1",
+                        Path(temp_dir) / "kiosk.log.2",
+                    )
+                )
+                self.assertNotIn("first-", combined)
+
 
 class OutputAssignmentTests(unittest.TestCase):
     def setUp(self):
+        self.cache_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.cache_dir.cleanup)
+        self.cache_file_patcher = patch.object(
+            app_module,
+            "DISPLAY_CACHE_FILE",
+            Path(self.cache_dir.name) / "display_cache.json",
+        )
+        self.cache_file_patcher.start()
+        self.addCleanup(self.cache_file_patcher.stop)
         self.manager = KioskManager()
         self.monitors = parse_xrandr_monitors(XRANDR_SAMPLE)
 
@@ -210,6 +368,78 @@ class OutputAssignmentTests(unittest.TestCase):
             "--output", "HDMI-A-1", "--auto", "--rotate", "normal",
             "--right-of", "HDMI-A-2",
         ]])
+
+    def test_prepare_monitor_layout_uses_cached_mode_for_hotplug(self):
+        monitors = parse_xrandr_monitors(XRANDR_HOTPLUG_INACTIVE_SAMPLE)
+        confirmed = dict(next(
+            monitor for monitor in monitors if monitor["name"] == "HDMI-A-2"))
+        confirmed.update({
+            "active": True,
+            "geometry": "1920x1080+1920+0",
+            "mode": "1920x1080",
+            "rate": 60.0,
+        })
+        app_module.update_display_mode_cache([confirmed], force=True)
+        commands = []
+        cfg = {
+            "screens": [
+                {"enabled": True, "output": "HDMI-A-2", "rotation": "normal"},
+                {"enabled": True, "output": "HDMI-A-1", "rotation": "normal"},
+            ]
+        }
+
+        def fake_run(cmd, **kwargs):
+            commands.append(cmd)
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        with (
+            patch.object(app_module.subprocess, "run", fake_run),
+            patch.object(app_module, "detect_monitors", lambda: self.monitors),
+        ):
+            self.manager._prepare_monitor_layout(monitors, cfg)
+
+        self.assertIn("--mode", commands[0])
+        self.assertIn("1920x1080", commands[0])
+        self.assertIn("--rate", commands[0])
+
+    def test_prepare_monitor_layout_retries_with_auto_when_cache_is_rejected(self):
+        monitors = parse_xrandr_monitors(XRANDR_HOTPLUG_INACTIVE_SAMPLE)
+        confirmed = dict(next(
+            monitor for monitor in monitors if monitor["name"] == "HDMI-A-2"))
+        confirmed.update({
+            "active": True,
+            "geometry": "1920x1080+1920+0",
+            "mode": "1920x1080",
+            "rate": 60.0,
+        })
+        app_module.update_display_mode_cache([confirmed], force=True)
+        commands = []
+        cfg = {
+            "screens": [
+                {"enabled": True, "output": "HDMI-A-2", "rotation": "normal"},
+                {"enabled": True, "output": "HDMI-A-1", "rotation": "normal"},
+            ]
+        }
+
+        def fake_run(cmd, **kwargs):
+            commands.append(cmd)
+            return SimpleNamespace(
+                returncode=1 if len(commands) == 1 else 0,
+                stdout=b"",
+                stderr=b"cached mode rejected",
+            )
+
+        with (
+            patch.object(app_module.subprocess, "run", fake_run),
+            patch.object(app_module, "detect_monitors", lambda: self.monitors),
+        ):
+            result = self.manager._prepare_monitor_layout(monitors, cfg)
+
+        self.assertEqual(result, self.monitors)
+        self.assertEqual(len(commands), 2)
+        self.assertIn("--mode", commands[0])
+        self.assertNotIn("--mode", commands[1])
+        self.assertEqual(commands[1].count("--auto"), 2)
 
     def test_config_rejects_duplicate_enabled_monitor_outputs(self):
         config, error = app_module.validate_config_payload({

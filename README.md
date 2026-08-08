@@ -139,7 +139,10 @@ That's it. Configure your screens under the *Screens* tab and hit *Save and appl
 For a permanent two-monitor setup, assign each screen to its physical HDMI
 output. PiScreenPortal watches the output layout, activates a reconnected
 display as an extended desktop, and restores only the affected Chromium window.
-The page on the monitor that remained connected keeps running.
+The page on the monitor that remained connected keeps running. Confirmed display
+modes are cached by EDID and output, so a reconnected monitor can reuse its last
+working mode. If that mode is no longer advertised or accepted, the layout
+automatically falls back to `xrandr --auto`.
 
 ---
 
@@ -183,9 +186,17 @@ journalctl -u pi-kiosk -f           # live logs
 tail -f ~/PiScreenPortal/kiosk.log  # application log
 ```
 
+`kiosk.log` rotates automatically at 2 MiB and keeps three backups
+(`kiosk.log.1` through `kiosk.log.3`), limiting the application logs to roughly
+8 MiB in total.
+
 ## Configuration file
 
 Stored at `~/PiScreenPortal/config.json`. You can also export/import it via the *Settings* tab.
+
+The automatically managed `display_cache.json` stores the last confirmed mode
+for each HDMI output and EDID. It is safe to delete; PiScreenPortal recreates it
+after the next successful monitor query.
 
 ## Troubleshooting
 
