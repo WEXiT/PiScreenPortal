@@ -1,7 +1,6 @@
 // Simple i18n for PiScreenPortal.
 // Two locales: en (default) and de.
 
-
 window.I18N = {
   en: {
     "header.language": "Language",
@@ -10,6 +9,7 @@ window.I18N = {
     "tabs.presentation": "Presentation",
     "tabs.wifi": "Wi-Fi",
     "tabs.system": "System",
+    "tabs.diagnostics": "Diagnostics",
     "tabs.settings": "Settings",
 
     "common.loading": "Loading...",
@@ -22,6 +22,7 @@ window.I18N = {
     "common.error": "Error",
     "common.yes": "yes",
     "common.no": "no",
+    "common.unknown": "unknown",
     "common.none": "-",
     "common.remove": "Remove",
     "common.refresh": "Refresh",
@@ -47,6 +48,7 @@ window.I18N = {
     "svc.enabled": "enabled at boot",
     "svc.note.unclutter": "Hides the mouse pointer (requires X11).",
     "svc.note.xdotool": "Required for the reload action.",
+    "svc.note.wmctrl": "Keeps fullscreen windows on their assigned monitor.",
     "svc.note.xrandr": "Required for monitor detection.",
     "svc.note.uxplay": "Only active while a presentation is running.",
     "svc.note.nmcli": "Required for Wi-Fi management.",
@@ -101,10 +103,13 @@ window.I18N = {
     "maint.update_available": "Update available: {current} -> {remote}",
     "maint.no_update": "Up to date: {version}",
     "maint.local_newer": "Local version is newer: {current} / remote {remote}",
+    "maint.update_available_commit": "Update available on GitHub: {current} -> {remote}",
+    "maint.no_update_commit": "Up to date: {version}",
     "maint.update_now": "Update from Git & reboot",
     "maint.update_running": "Loading update from Git...",
     "maint.update_ok_changed": "Update loaded. Raspberry reboots in a few seconds.",
     "maint.update_ok_current": "Already up to date. Raspberry reboots in a few seconds.",
+    "maint.local_changes_stashed": "Local file changes were saved in a Git stash.",
     "maint.update_failed": "Update failed:",
     "maint.confirm_update": "Load the newest files from GitHub and reboot the Raspberry?",
     "maint.error.no_version_file": "No VERSION file found on origin/main.",
@@ -120,16 +125,53 @@ window.I18N = {
     "maint.boot_optimize_failed": "Boot optimization failed:",
     "maint.confirm_boot_optimize": "Apply a black boot cover, hide desktop icons/panel/cursor, and start a temporary black Chromium cover early at login?",
 
+    "boot.title": "Boot display",
+    "boot.desc": "Hide desktop icons, panel, cursor, and the early desktop flash behind a black boot cover.",
+    "boot.optimize": "Hide desktop at boot",
+    "boot.optimize_running": "Applying boot display settings...",
+    "boot.optimize_ok": "Boot display optimized. Reboot once to test it.",
+    "boot.optimize_failed": "Boot display optimization failed:",
+    "boot.confirm_optimize": "Apply a black boot cover, hide desktop icons/panel/cursor, and start a temporary black Chromium cover early at login?",
+
+    "updates.title": "Updates",
+    "updates.app_title": "PiScreenPortal",
+    "updates.scan_app": "Scan app updates",
+    "updates.update_app": "Update from Git & reboot",
+    "updates.system_title": "Raspberry Pi OS",
+    "updates.system_unknown": "Not scanned",
+    "updates.system_not_scanned": "Open Settings to scan Raspberry updates.",
+    "updates.scan_system": "Scan Raspberry updates",
+    "updates.install_system": "Install Raspberry updates",
+    "updates.system_scanning": "Scanning Raspberry updates...",
+    "updates.system_installing": "Installing Raspberry updates...",
+    "updates.system_none": "Up to date",
+    "updates.system_no_updates": "No Raspberry updates found.",
+    "updates.system_count": "{count} updates",
+    "updates.system_more": "{count} more updates not shown.",
+    "updates.system_found": "{count} Raspberry updates found.",
+    "updates.system_scan_failed": "Raspberry update scan failed:",
+    "updates.system_install_done": "Raspberry updates finished.",
+    "updates.system_install_failed": "Raspberry update install failed:",
+    "updates.reboot_required": "A Raspberry reboot is required to finish updates.",
+    "updates.confirm_install_system": "Install all available Raspberry Pi OS updates now? This can take several minutes.",
+    "updates.error.busy": "A Raspberry update scan or install is already running.",
+    "updates.error.apt_missing": "apt-get is not installed.",
+
     "screens.detected": "Detected monitors",
     "screens.col_name": "Name",
     "screens.col_primary": "Primary",
     "screens.col_resolution": "Resolution",
     "screens.col_position": "Position",
+    "screens.col_status": "Status",
+    "screens.live": "live",
+    "screens.connected_waiting": "connected, activating...",
     "screens.sorted": "Sorted by X position from left to right.",
+    "screens.hotplug_hint": "For two-screen installations, assign each page to a fixed HDMI output so an unplugged display cannot take over the other page.",
     "screens.config": "Screen configuration",
     "screens.add": "Add screen",
     "screens.none_detected": "No monitors detected. Is a graphical session running and is a display connected?",
     "screens.auto": "— automatic —",
+    "screens.not_detected": "not detected",
     "screens.label": "Screen",
     "screens.label_name": "Label",
     "screens.enabled": "Enabled",
@@ -205,6 +247,17 @@ window.I18N = {
     "system.disk_total": "Disk total",
     "system.time": "System time",
     "system.log_empty": "(empty)",
+    "diag.title": "Display diagnosis",
+    "diag.run": "Run analysis now",
+    "diag.desc": "Run this while a page is missing. It captures the detected displays, Chromium windows, and the latest kiosk log entries.",
+    "diag.captured": "Captured:",
+    "diag.assignments": "Page assignments",
+    "diag.page": "Page",
+    "diag.configured": "Configured output",
+    "diag.assigned": "Current output",
+    "diag.running": "Browser running",
+    "diag.visible": "Visible on output",
+    "diag.unassigned": "not assigned",
 
     "settings.general": "General",
     "settings.autostart": "Start automatically at boot",
@@ -226,11 +279,17 @@ window.I18N = {
     "settings.import_invalid": "Not a valid JSON file.",
     "settings.error.invalid_config": "Invalid config.",
     "settings.error.invalid_json": "Invalid JSON data.",
+    "settings.error.screens_list": "The screen configuration must be a list.",
+    "settings.error.screen_entry": "A screen entry is invalid.",
+    "settings.error.duplicate_output": "Output {output} is assigned to more than one active screen.",
     "settings.error.auth_required_fields": "Username and password are required when access protection is enabled.",
     "wifi.error.ssid_missing": "SSID missing.",
     "wifi.error.name_missing": "Name missing.",
 
     "screen.running": "Running (PID {pid})",
+    "screen.visible": "Live on {output} (PID {pid})",
+    "screen.running_unverified": "Running on {output} (PID {pid})",
+    "screen.not_visible": "Not visible on {output}; automatic repair active (PID {pid})",
     "screen.inactive": "Not running",
   },
 
@@ -241,6 +300,7 @@ window.I18N = {
     "tabs.presentation": "Präsentation",
     "tabs.wifi": "WLAN",
     "tabs.system": "System",
+    "tabs.diagnostics": "Analyse",
     "tabs.settings": "Einstellungen",
 
     "common.loading": "Lade...",
@@ -253,6 +313,7 @@ window.I18N = {
     "common.error": "Fehler",
     "common.yes": "ja",
     "common.no": "nein",
+    "common.unknown": "unbekannt",
     "common.none": "-",
     "common.remove": "Entfernen",
     "common.refresh": "Aktualisieren",
@@ -278,6 +339,7 @@ window.I18N = {
     "svc.enabled": "beim Boot aktiv",
     "svc.note.unclutter": "Blendet den Mauszeiger aus (benötigt X11).",
     "svc.note.xdotool": "Wird für die Reload-Aktion benötigt.",
+    "svc.note.wmctrl": "Hält Vollbildfenster zuverlässig auf dem zugewiesenen Monitor.",
     "svc.note.xrandr": "Wird für die Monitor-Erkennung benötigt.",
     "svc.note.uxplay": "Nur aktiv während eine Präsentation läuft.",
     "svc.note.nmcli": "Wird für die WLAN-Verwaltung benötigt.",
@@ -332,10 +394,13 @@ window.I18N = {
     "maint.update_available": "Update verfügbar: {current} -> {remote}",
     "maint.no_update": "Aktuell: {version}",
     "maint.local_newer": "Lokale Version ist neuer: {current} / remote {remote}",
+    "maint.update_available_commit": "Update auf GitHub verfuegbar: {current} -> {remote}",
+    "maint.no_update_commit": "Aktuell: {version}",
     "maint.update_now": "Update aus Git & Neustart",
     "maint.update_running": "Update wird aus Git geladen...",
     "maint.update_ok_changed": "Update geladen. Raspberry startet in wenigen Sekunden neu.",
     "maint.update_ok_current": "Bereits aktuell. Raspberry startet in wenigen Sekunden neu.",
+    "maint.local_changes_stashed": "Lokale Dateiänderungen wurden in einem Git-Stash gesichert.",
     "maint.update_failed": "Update fehlgeschlagen:",
     "maint.confirm_update": "Neueste Dateien von GitHub laden und den Raspberry neu starten?",
     "maint.error.no_version_file": "Keine VERSION-Datei auf origin/main gefunden.",
@@ -351,16 +416,53 @@ window.I18N = {
     "maint.boot_optimize_failed": "Boot-Optimierung fehlgeschlagen:",
     "maint.confirm_boot_optimize": "Schwarzen Boot-Cover aktivieren, Desktop-Icons/Panel/Mauszeiger verbergen und frueh einen schwarzen Chromium-Cover starten?",
 
+    "boot.title": "Boot-Anzeige",
+    "boot.desc": "Verbirgt Desktop-Icons, Panel, Mauszeiger und das fruehe Desktop-Aufblitzen hinter einem schwarzen Boot-Cover.",
+    "boot.optimize": "Desktop beim Boot verbergen",
+    "boot.optimize_running": "Boot-Anzeige wird angepasst...",
+    "boot.optimize_ok": "Boot-Anzeige optimiert. Bitte einmal neu starten und testen.",
+    "boot.optimize_failed": "Boot-Anzeige konnte nicht optimiert werden:",
+    "boot.confirm_optimize": "Schwarzen Boot-Cover aktivieren, Desktop-Icons/Panel/Mauszeiger verbergen und frueh einen schwarzen Chromium-Cover starten?",
+
+    "updates.title": "Updates",
+    "updates.app_title": "PiScreenPortal",
+    "updates.scan_app": "App-Updates suchen",
+    "updates.update_app": "Update aus Git & Neustart",
+    "updates.system_title": "Raspberry Pi OS",
+    "updates.system_unknown": "Nicht gesucht",
+    "updates.system_not_scanned": "Settings oeffnen, um Raspberry-Updates zu suchen.",
+    "updates.scan_system": "Raspberry-Updates suchen",
+    "updates.install_system": "Raspberry-Updates installieren",
+    "updates.system_scanning": "Raspberry-Updates werden gesucht...",
+    "updates.system_installing": "Raspberry-Updates werden installiert...",
+    "updates.system_none": "Aktuell",
+    "updates.system_no_updates": "Keine Raspberry-Updates gefunden.",
+    "updates.system_count": "{count} Updates",
+    "updates.system_more": "{count} weitere Updates nicht angezeigt.",
+    "updates.system_found": "{count} Raspberry-Updates gefunden.",
+    "updates.system_scan_failed": "Raspberry-Update-Suche fehlgeschlagen:",
+    "updates.system_install_done": "Raspberry-Updates abgeschlossen.",
+    "updates.system_install_failed": "Raspberry-Update-Installation fehlgeschlagen:",
+    "updates.reboot_required": "Ein Raspberry-Neustart ist erforderlich, um Updates abzuschliessen.",
+    "updates.confirm_install_system": "Alle verfuegbaren Raspberry Pi OS Updates jetzt installieren? Das kann mehrere Minuten dauern.",
+    "updates.error.busy": "Eine Raspberry-Update-Suche oder Installation laeuft bereits.",
+    "updates.error.apt_missing": "apt-get ist nicht installiert.",
+
     "screens.detected": "Erkannte Monitore",
     "screens.col_name": "Name",
     "screens.col_primary": "Primär",
     "screens.col_resolution": "Auflösung",
     "screens.col_position": "Position",
+    "screens.col_status": "Status",
+    "screens.live": "live",
+    "screens.connected_waiting": "verbunden, wird aktiviert...",
     "screens.sorted": "Sortiert nach X-Position von links nach rechts.",
+    "screens.hotplug_hint": "Bei zwei Bildschirmen jede Webseite einem festen HDMI-Ausgang zuweisen, damit ein abgezogener Monitor nicht die andere Seite übernimmt.",
     "screens.config": "Bildschirm-Konfiguration",
     "screens.add": "Bildschirm hinzufügen",
     "screens.none_detected": "Keine Monitore erkannt. Läuft eine grafische Sitzung und ist ein Display verbunden?",
     "screens.auto": "— automatisch —",
+    "screens.not_detected": "nicht erkannt",
     "screens.label": "Bildschirm",
     "screens.label_name": "Bezeichnung",
     "screens.enabled": "Aktiviert",
@@ -436,6 +538,17 @@ window.I18N = {
     "system.disk_total": "Festplatte gesamt",
     "system.time": "Systemzeit",
     "system.log_empty": "(leer)",
+    "diag.title": "Display-Analyse",
+    "diag.run": "Analyse jetzt ausführen",
+    "diag.desc": "Starte die Analyse, während eine Seite fehlt. Sie erfasst erkannte Displays, Chromium-Fenster und die letzten Kiosk-Logeinträge.",
+    "diag.captured": "Erfasst:",
+    "diag.assignments": "Webseiten-Zuordnung",
+    "diag.page": "Webseite",
+    "diag.configured": "Konfigurierter Ausgang",
+    "diag.assigned": "Aktueller Ausgang",
+    "diag.running": "Browser läuft",
+    "diag.visible": "Auf Ausgang sichtbar",
+    "diag.unassigned": "nicht zugewiesen",
 
     "settings.general": "Allgemein",
     "settings.autostart": "Automatisch beim Boot starten",
@@ -457,16 +570,28 @@ window.I18N = {
     "settings.import_invalid": "Keine gültige JSON-Datei.",
     "settings.error.invalid_config": "Ungültige Config.",
     "settings.error.invalid_json": "Ungültige JSON-Daten.",
+    "settings.error.screens_list": "Die Bildschirm-Konfiguration muss eine Liste sein.",
+    "settings.error.screen_entry": "Ein Bildschirm-Eintrag ist ungültig.",
+    "settings.error.duplicate_output": "Ausgang {output} ist mehreren aktiven Bildschirmen zugewiesen.",
     "settings.error.auth_required_fields": "Wenn der Zugangsschutz aktiv ist, müssen Benutzername und Passwort gesetzt sein.",
     "wifi.error.ssid_missing": "SSID fehlt.",
     "wifi.error.name_missing": "Name fehlt.",
 
     "screen.running": "Läuft (PID {pid})",
+    "screen.visible": "Live auf {output} (PID {pid})",
+    "screen.running_unverified": "Läuft auf {output} (PID {pid})",
+    "screen.not_visible": "Auf {output} nicht sichtbar; automatische Reparatur aktiv (PID {pid})",
     "screen.inactive": "Nicht aktiv",
   },
 };
 
-window.I18N.lang = localStorage.getItem("pisp_lang") || "en";
+window.I18N.lang = (function () {
+  let stored = null;
+  try { stored = localStorage.getItem("pisp_lang"); } catch (e) {}
+  if (stored && window.I18N[stored]) return stored;
+  // Ohne gespeicherte Wahl die Browsersprache verwenden.
+  return /^de\b/i.test(navigator.language || "") ? "de" : "en";
+})();
 
 window.t = function (key, params) {
   const lang = window.I18N.lang;
@@ -518,7 +643,7 @@ document.addEventListener("DOMContentLoaded", () => {
     sel.value = window.I18N.lang;
     sel.addEventListener("change", () => {
       window.I18N.lang = sel.value;
-      localStorage.setItem("pisp_lang", sel.value);
+      try { localStorage.setItem("pisp_lang", sel.value); } catch (e) {}
       window.applyI18n();
     });
   }
@@ -526,10 +651,147 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 // HTML translations for list items with inline markup.
-window.I18N.en["pres.howto_ios"] = '<b>iPhone / iPad:</b> open Control Center, tap <i>Screen Mirroring</i>, choose <code id="pres-name-hint">PiScreenPortal</code>.';
-window.I18N.en["pres.howto_mac"] = '<b>Mac:</b> Control Center &rarr; Screen Mirroring &rarr; <code>PiScreenPortal</code>.';
-window.I18N.en["pres.howto_win"] = '<b>Windows / Android:</b> AirPlay is not natively supported. Recommended: <a href="https://www.deskreen.com" target="_blank">Deskreen</a> or AirMyPC.';
+window.I18N.en["pres.howto_ios"] = '<b>iPhone / iPad:</b> open Control Center, tap <i>Screen Mirroring</i>, choose <code class="pres-name-hint">PiScreenPortal</code>.';
+window.I18N.en["pres.howto_mac"] = '<b>Mac:</b> Control Center &rarr; Screen Mirroring &rarr; <code class="pres-name-hint">PiScreenPortal</code>.';
+window.I18N.en["pres.howto_win"] = '<b>Windows / Android:</b> AirPlay is not natively supported. Recommended: <a href="https://www.deskreen.com" target="_blank" rel="noopener">Deskreen</a> or AirMyPC.';
 
-window.I18N.de["pres.howto_ios"] = '<b>iPhone / iPad:</b> Kontrollzentrum öffnen, auf <i>Bildschirmsynchronisierung</i> tippen, <code id="pres-name-hint">PiScreenPortal</code> wählen.';
-window.I18N.de["pres.howto_mac"] = '<b>Mac:</b> Kontrollzentrum &rarr; Bildschirmsynchronisierung &rarr; <code>PiScreenPortal</code>.';
-window.I18N.de["pres.howto_win"] = '<b>Windows / Android:</b> AirPlay nicht nativ verfügbar. Empfohlen: <a href="https://www.deskreen.com" target="_blank">Deskreen</a> oder AirMyPC.';
+window.I18N.de["pres.howto_ios"] = '<b>iPhone / iPad:</b> Kontrollzentrum öffnen, auf <i>Bildschirmsynchronisierung</i> tippen, <code class="pres-name-hint">PiScreenPortal</code> wählen.';
+window.I18N.de["pres.howto_mac"] = '<b>Mac:</b> Kontrollzentrum &rarr; Bildschirmsynchronisierung &rarr; <code class="pres-name-hint">PiScreenPortal</code>.';
+window.I18N.de["pres.howto_win"] = '<b>Windows / Android:</b> AirPlay nicht nativ verfügbar. Empfohlen: <a href="https://www.deskreen.com" target="_blank" rel="noopener">Deskreen</a> oder AirMyPC.';
+
+// ---------- Multi-monitor, keyring and UI additions ----------
+Object.assign(window.I18N.en, {
+  "dash.quick_desc": "Control every kiosk window at once.",
+  "dash.done_start": "Kiosk started.",
+  "dash.done_stop": "Kiosk stopped.",
+  "dash.done_restart": "Kiosk restarted.",
+  "dash.done_reload": "Pages reloaded.",
+  "dash.done_screen_off": "Monitors switched off.",
+  "dash.done_screen_on": "Monitors switched on.",
+  "dash.done_reboot": "Raspberry is rebooting...",
+  "dash.done_shutdown": "Raspberry is shutting down...",
+  "dash.error.no_window": "No kiosk window found. Is the kiosk running and is xdotool installed?",
+  "common.done": "Done.",
+  "common.unsaved": "Unsaved changes",
+  "common.saved_applied": "Saved and applied. Unchanged screens kept running.",
+  "common.error.cross_site": "Request blocked: it did not come from this page.",
+
+  "pill.kiosk_on": "Kiosk active",
+  "pill.kiosk_off": "Kiosk stopped",
+  "pill.presentation": "Presentation running",
+  "pill.screens": "{live}/{total} screens live",
+
+  "layout.title": "Monitor layout",
+  "layout.desc": "Each box is a connected display at its real position. The page shown on it is listed inside.",
+  "layout.identify": "Identify monitors",
+  "layout.identify_running": "Look at your displays: each one shows its number and output name for 10 seconds ({count} monitors).",
+  "layout.auto": "Assign left to right",
+  "layout.auto_done": "Screens assigned from left to right. Click \"Save and apply\" to use it.",
+  "layout.swap": "Swap screens",
+  "layout.swap_done": "Outputs swapped. Click \"Save and apply\" to use it.",
+  "layout.none": "No active monitor detected. Is a display connected and a graphical session running?",
+  "layout.no_page": "no page",
+  "layout.more_screens": "{screens} screens are enabled, but only {monitors} monitors are active.",
+  "layout.ok_hint": "Tip: use \"Identify monitors\" to see which physical display is which output.",
+
+  "screens.resolution": "Resolution",
+  "screens.res_auto": "Automatic",
+  "screens.rot_normal": "Normal (landscape)",
+  "screens.rot_left": "Left (portrait)",
+  "screens.rot_right": "Right (portrait)",
+  "screens.rot_inverted": "Upside down",
+  "screens.status_disabled": "Disabled",
+  "screens.status_presentation": "Paused (presentation)",
+  "screens.status_live": "Live on {output}",
+  "screens.status_hidden": "Not visible on {output}",
+  "screens.status_running": "Running on {output}",
+  "screens.restart_one": "Restart",
+  "screens.restart_one_hint": "Restart only this screen; other monitors keep running.",
+  "screens.restarted_one": "Screen \"{name}\" restarted.",
+  "screens.save_first": "Save your changes first.",
+  "screens.dupe_output": "Output {output} is used by more than one enabled screen.",
+  "screens.output_missing": "Output {output} is not connected right now.",
+  "screens.empty": "No screens configured yet.",
+  "screens.error.no_monitor": "No monitor found for this screen.",
+  "screens.error.unknown": "Unknown screen.",
+  "screens.auto": "Automatic",
+
+  "settings.disable_keyring": "Disable GNOME keyring (no unlock dialog, recommended)",
+  "settings.password_keep": "unchanged – type to set a new password",
+  "settings.password_new": "set a password",
+  "settings.auth_note": "The password is stored as a salted hash. Leave the field empty to keep the current password.",
+  "keyring.autostart_off": "Keyring autostart is off",
+  "keyring.autostart_on": "Keyring autostart is on",
+  "keyring.chromium_basic": "Chromium stores no passwords in the keyring",
+  "keyring.daemon_running": "a keyring daemon is still running until the next reboot",
+
+  "maint.deps_failed": "Python dependencies could not be updated; see the log.",
+});
+
+Object.assign(window.I18N.de, {
+  "dash.quick_desc": "Alle Kiosk-Fenster auf einmal steuern.",
+  "dash.done_start": "Kiosk gestartet.",
+  "dash.done_stop": "Kiosk gestoppt.",
+  "dash.done_restart": "Kiosk neu gestartet.",
+  "dash.done_reload": "Seiten neu geladen.",
+  "dash.done_screen_off": "Monitore ausgeschaltet.",
+  "dash.done_screen_on": "Monitore eingeschaltet.",
+  "dash.done_reboot": "Raspberry startet neu...",
+  "dash.done_shutdown": "Raspberry fährt herunter...",
+  "dash.error.no_window": "Kein Kiosk-Fenster gefunden. Läuft der Kiosk und ist xdotool installiert?",
+  "common.done": "Erledigt.",
+  "common.unsaved": "Ungespeicherte Änderungen",
+  "common.saved_applied": "Gespeichert und übernommen. Unveränderte Bildschirme laufen weiter.",
+  "common.error.cross_site": "Anfrage blockiert: Sie kam nicht von dieser Seite.",
+
+  "pill.kiosk_on": "Kiosk aktiv",
+  "pill.kiosk_off": "Kiosk gestoppt",
+  "pill.presentation": "Präsentation läuft",
+  "pill.screens": "{live}/{total} Bildschirme live",
+
+  "layout.title": "Monitor-Anordnung",
+  "layout.desc": "Jede Box ist ein angeschlossenes Display an seiner echten Position. Darin steht, welche Seite es zeigt.",
+  "layout.identify": "Monitore identifizieren",
+  "layout.identify_running": "Schau auf die Displays: Jedes zeigt 10 Sekunden lang seine Nummer und den Ausgangsnamen ({count} Monitore).",
+  "layout.auto": "Von links nach rechts zuordnen",
+  "layout.auto_done": "Bildschirme von links nach rechts zugeordnet. Mit \"Speichern und anwenden\" übernehmen.",
+  "layout.swap": "Bildschirme tauschen",
+  "layout.swap_done": "Ausgänge getauscht. Mit \"Speichern und anwenden\" übernehmen.",
+  "layout.none": "Kein aktiver Monitor erkannt. Ist ein Display angeschlossen und läuft eine grafische Sitzung?",
+  "layout.no_page": "keine Seite",
+  "layout.more_screens": "{screens} Bildschirme sind aktiv, aber nur {monitors} Monitore angeschlossen.",
+  "layout.ok_hint": "Tipp: Mit \"Monitore identifizieren\" siehst du, welches Display an welchem Ausgang hängt.",
+
+  "screens.resolution": "Auflösung",
+  "screens.res_auto": "Automatisch",
+  "screens.rot_normal": "Normal (quer)",
+  "screens.rot_left": "Links (hochkant)",
+  "screens.rot_right": "Rechts (hochkant)",
+  "screens.rot_inverted": "Auf dem Kopf",
+  "screens.status_disabled": "Deaktiviert",
+  "screens.status_presentation": "Pausiert (Präsentation)",
+  "screens.status_live": "Live auf {output}",
+  "screens.status_hidden": "Nicht sichtbar auf {output}",
+  "screens.status_running": "Läuft auf {output}",
+  "screens.restart_one": "Neu starten",
+  "screens.restart_one_hint": "Nur diesen Bildschirm neu starten; andere Monitore laufen weiter.",
+  "screens.restarted_one": "Bildschirm \"{name}\" neu gestartet.",
+  "screens.save_first": "Bitte zuerst speichern.",
+  "screens.dupe_output": "Ausgang {output} ist mehreren aktiven Bildschirmen zugewiesen.",
+  "screens.output_missing": "Ausgang {output} ist gerade nicht angeschlossen.",
+  "screens.empty": "Noch keine Bildschirme eingerichtet.",
+  "screens.error.no_monitor": "Kein Monitor für diesen Bildschirm gefunden.",
+  "screens.error.unknown": "Unbekannter Bildschirm.",
+  "screens.auto": "Automatisch",
+
+  "settings.disable_keyring": "GNOME-Schlüsselbund deaktivieren (kein Entsperr-Dialog, empfohlen)",
+  "settings.password_keep": "unverändert – tippen, um ein neues Passwort zu setzen",
+  "settings.password_new": "Passwort festlegen",
+  "settings.auth_note": "Das Passwort wird als gesalzener Hash gespeichert. Feld leer lassen, um das aktuelle Passwort zu behalten.",
+  "keyring.autostart_off": "Schlüsselbund-Autostart ist aus",
+  "keyring.autostart_on": "Schlüsselbund-Autostart ist an",
+  "keyring.chromium_basic": "Chromium speichert keine Passwörter im Schlüsselbund",
+  "keyring.daemon_running": "ein Schlüsselbund-Dienst läuft noch bis zum nächsten Neustart",
+
+  "maint.deps_failed": "Python-Abhängigkeiten konnten nicht aktualisiert werden, siehe Log.",
+});
