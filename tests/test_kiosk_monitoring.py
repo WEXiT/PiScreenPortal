@@ -32,6 +32,9 @@ except ModuleNotFoundError:
         def route(self, *args, **kwargs):
             return lambda fn: fn
 
+        def before_request(self, fn):
+            return fn
+
         def run(self, *args, **kwargs):
             pass
 
@@ -1031,7 +1034,7 @@ class ReloadTests(unittest.TestCase):
         sent = []
 
         def fake_run(cmd, **kwargs):
-            if cmd[:3] == ["xdotool", "key", "--window"]:
+            if cmd[:3] == ["xdotool", "windowactivate", "--sync"]:
                 sent.append(cmd[3])
             return SimpleNamespace(returncode=0)
 
@@ -1056,6 +1059,20 @@ class ReloadTests(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertEqual(sent, ["101", "103"])
+
+    def test_reload_falls_back_to_send_event_when_activation_fails(self):
+        commands = []
+
+        def fake_run(cmd, **kwargs):
+            commands.append(cmd)
+            return SimpleNamespace(
+                returncode=1 if cmd[1] == "windowactivate" else 0)
+
+        with patch.object(app_module.subprocess, "run", fake_run):
+            ok = app_module._send_reload_key("101", {})
+
+        self.assertTrue(ok)
+        self.assertEqual(commands[-1], ["xdotool", "key", "--window", "101", "F5"])
 
 
 class WatcherTests(unittest.TestCase):

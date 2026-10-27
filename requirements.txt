@@ -1,3 +1,4 @@
-Flask>=3.0
-qrcode[pil]>=7.4
-
+# Tested with Python 3.11 (Raspberry Pi OS Bookworm) and 3.13 (Trixie).
+# Upper bounds keep a fresh install on the same major versions that were tested.
+Flask>=3.0,<4
+qrcode[pil]>=7.4,<9
