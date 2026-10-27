@@ -18,24 +18,38 @@ Raspberry Pi · Digital Signage · Kiosk Mode · Multi Monitor · AirPlay · Web
 
 ## Features
 
-- **Multi-screen kiosk** – one URL per HDMI output, with rotation, zoom, auto-reload and cursor-hiding
-- **Web interface on port 2411** – manage everything from your phone or laptop
+- **Multi-screen kiosk** – one URL per HDMI output, with rotation, resolution, zoom, auto-reload and cursor-hiding
+- **Easy two-monitor setup** – live monitor map, *Identify monitors* (shows a big number on every display), *Assign left to right*, *Swap screens*, and warnings for double-assigned or unplugged outputs
+- **Gentle apply** – saving only restarts the screens you changed; the other monitor keeps running. Each screen can also be restarted on its own
+- **Hotplug-safe** – an unplugged display never takes over the other page; reconnected displays get their last working mode back
+- **Web interface on port 2411** – manage everything from your phone or laptop, light and dark mode
 - **AirPlay receiver** – iPhone/iPad/Mac users tap *Screen Mirroring* → presentation in seconds
 - **Wi-Fi management** – scan, connect, manually add hidden SSIDs, list and remove saved profiles
 - **System monitoring** – CPU temperature, load, RAM, disk, logs, running processes
 - **Auto-start on boot**, Chromium crash-recovery, configurable Chromium flags
 - **Maintenance controls** - scheduled Raspberry reboot, one-click Git update/reboot, and a black boot cover to hide the desktop flash
-- **Bilingual UI** – English (default) and German, switchable in the header
-- **Password protection** with a proper login page and session cookie (stay signed in for 14 days)
+- **Bilingual UI** – English and German (follows the browser language), switchable in the header
+- **Password protection** with a proper login page and session cookie (stay signed in for 14 days); the password is stored as a salted PBKDF2 hash
+- **No keyring dialogs** – the GNOME keyring autostart is disabled by default and Chromium never uses the keyring (can be switched in *Settings*)
+- **Crash-safe configuration** – `config.json` is written atomically and the previous version is kept as `config.json.bak`
 - **Import / export configuration** as JSON
 - **Version Check, Updater and more in V3
 
 ## Demo
 👉 [Live Demo](https://wexit.github.io/PiScreenPortal/docs)
 
-The live demo is a reduced offline preview. Hardware-only features such as
-real monitor detection, Chromium control, AirPlay and system updates require a
-Raspberry Pi installation.
+The live demo runs the real web interface against a simulated Raspberry Pi
+(two monitors, Wi-Fi, updates, presentation mode). Nothing is sent anywhere;
+hardware features such as real monitor detection, Chromium control, AirPlay
+and system updates require a Raspberry Pi installation.
+
+To try the demo locally:
+
+```bash
+python3 -m http.server 8765 --directory docs
+```
+
+Then open `http://localhost:8765`.
 
 ## Screenshots
 <p align="center">
@@ -136,11 +150,27 @@ Open in a browser:
 
 That's it. Configure your screens under the *Screens* tab and hit *Save and apply*.
 
-For a permanent two-monitor setup, assign each screen to its physical HDMI
-output. PiScreenPortal watches the output layout, activates a reconnected
-display as an extended desktop, and restores only the affected Chromium window.
-The page on the monitor that remained connected keeps running. Confirmed display
-modes are cached by EDID and output, so a reconnected monitor can reuse its last
+### Two or more monitors
+
+1. Open **Screens**. The *Monitor layout* map shows every connected display at
+   its real position and which page runs on it.
+2. Click **Identify monitors** – each display shows its number and output name
+   (e.g. `1 · HDMI-A-1`) for 10 seconds.
+3. Click **Assign left to right** (or pick the output per screen). With exactly
+   two screens, **Swap screens** exchanges them in one click.
+4. Optional per screen: **Resolution** (e.g. 1080p on a 4K TV to keep the Pi
+   fast) and **Rotation** for portrait displays.
+5. **Save and apply** – only screens whose settings changed are restarted.
+
+The first start also works with fewer monitors than screens: free displays
+are used right away, and the final assignment is stored once all displays are
+connected. A saved assignment is never moved to another monitor, so an
+unplugged display cannot take over the other page.
+
+PiScreenPortal watches the output layout, activates a reconnected display as
+an extended desktop, and restores only the affected Chromium window. The page
+on the monitor that remained connected keeps running. Confirmed display modes
+are cached by EDID and output, so a reconnected monitor can reuse its last
 working mode. If that mode is no longer advertised or accepted, the layout
 automatically falls back to `xrandr --auto`.
 
@@ -166,7 +196,9 @@ the web interface shows that an update is available.
 When you publish a new version, increment the number in `VERSION`, then commit
 and push it with the code changes. Click *Update from Git & reboot* to pull
 `origin/main` from
-`https://github.com/WEXiT/PiScreenPortal.git` and reboot the Raspberry.
+`https://github.com/WEXiT/PiScreenPortal.git` and reboot the Raspberry. If
+`requirements.txt` changed, the updater installs the new Python dependencies
+into the virtual environment before the reboot.
 
 Manual fallback:
 
@@ -193,6 +225,11 @@ tail -f ~/PiScreenPortal/kiosk.log  # application log
 ## Configuration file
 
 Stored at `~/PiScreenPortal/config.json`. You can also export/import it via the *Settings* tab.
+Every save is atomic; the previous version is kept as `config.json.bak` and is
+loaded automatically if `config.json` is ever damaged (for example by a power
+cut). The web password is only stored as a hash (`auth.password_hash`);
+configurations from older versions with a plain-text password are converted
+on the next start.
 
 The automatically managed `display_cache.json` stores the last confirmed mode
 for each HDMI output and EDID. It is safe to delete; PiScreenPortal recreates it
@@ -207,6 +244,8 @@ after the next successful monitor query.
 | Chromium on wrong monitor | In *Screens* tab, set the output explicitly (`HDMI-1`, `HDMI-2`) |
 | AirPlay device not visible | `systemctl status avahi-daemon` must be running; check firewall |
 | Lost password | Edit `~/PiScreenPortal/config.json` → set `auth.enabled` to `false`, restart service |
+| Keyring "unlock" dialog on the screen | *Settings → General → Disable GNOME keyring* (on by default), then reboot once. The installer moves old keyrings to `~/.local/share/keyrings.piscreenportal-backup-*` instead of deleting them. |
+| Pages swapped between the two monitors | *Screens → Identify monitors*, then *Swap screens* and *Save and apply* |
 
 ## Uninstall
 
@@ -241,9 +280,20 @@ PiScreenPortal/
 │   ├── app.js          # frontend logic
 │   ├── i18n.js         # translations (en, de)
 │   └── style.css
-└── templates/
-    ├── index.html
-    └── login.html
+├── templates/
+│   ├── index.html
+│   └── login.html
+├── docs/               # GitHub Pages demo (generated, except demo-api.js)
+├── tools/
+│   └── build_demo.py   # regenerates docs/ from templates/ + static/
+└── tests/              # unit tests (python3 -m unittest discover -s tests)
+```
+
+## Development
+
+```bash
+python3 -m unittest discover -s tests   # run the tests (works with or without Flask installed)
+python3 tools/build_demo.py             # refresh the demo after UI changes
 ```
 
 ## TAGS
