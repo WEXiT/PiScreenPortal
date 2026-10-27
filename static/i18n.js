@@ -585,7 +585,13 @@ window.I18N = {
   },
 };
 
-window.I18N.lang = localStorage.getItem("pisp_lang") || "en";
+window.I18N.lang = (function () {
+  let stored = null;
+  try { stored = localStorage.getItem("pisp_lang"); } catch (e) {}
+  if (stored && window.I18N[stored]) return stored;
+  // Ohne gespeicherte Wahl die Browsersprache verwenden.
+  return /^de\b/i.test(navigator.language || "") ? "de" : "en";
+})();
 
 window.t = function (key, params) {
   const lang = window.I18N.lang;
@@ -637,7 +643,7 @@ document.addEventListener("DOMContentLoaded", () => {
     sel.value = window.I18N.lang;
     sel.addEventListener("change", () => {
       window.I18N.lang = sel.value;
-      localStorage.setItem("pisp_lang", sel.value);
+      try { localStorage.setItem("pisp_lang", sel.value); } catch (e) {}
       window.applyI18n();
     });
   }
@@ -645,10 +651,147 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 // HTML translations for list items with inline markup.
-window.I18N.en["pres.howto_ios"] = '<b>iPhone / iPad:</b> open Control Center, tap <i>Screen Mirroring</i>, choose <code id="pres-name-hint">PiScreenPortal</code>.';
-window.I18N.en["pres.howto_mac"] = '<b>Mac:</b> Control Center &rarr; Screen Mirroring &rarr; <code>PiScreenPortal</code>.';
-window.I18N.en["pres.howto_win"] = '<b>Windows / Android:</b> AirPlay is not natively supported. Recommended: <a href="https://www.deskreen.com" target="_blank">Deskreen</a> or AirMyPC.';
+window.I18N.en["pres.howto_ios"] = '<b>iPhone / iPad:</b> open Control Center, tap <i>Screen Mirroring</i>, choose <code class="pres-name-hint">PiScreenPortal</code>.';
+window.I18N.en["pres.howto_mac"] = '<b>Mac:</b> Control Center &rarr; Screen Mirroring &rarr; <code class="pres-name-hint">PiScreenPortal</code>.';
+window.I18N.en["pres.howto_win"] = '<b>Windows / Android:</b> AirPlay is not natively supported. Recommended: <a href="https://www.deskreen.com" target="_blank" rel="noopener">Deskreen</a> or AirMyPC.';
 
-window.I18N.de["pres.howto_ios"] = '<b>iPhone / iPad:</b> Kontrollzentrum öffnen, auf <i>Bildschirmsynchronisierung</i> tippen, <code id="pres-name-hint">PiScreenPortal</code> wählen.';
-window.I18N.de["pres.howto_mac"] = '<b>Mac:</b> Kontrollzentrum &rarr; Bildschirmsynchronisierung &rarr; <code>PiScreenPortal</code>.';
-window.I18N.de["pres.howto_win"] = '<b>Windows / Android:</b> AirPlay nicht nativ verfügbar. Empfohlen: <a href="https://www.deskreen.com" target="_blank">Deskreen</a> oder AirMyPC.';
+window.I18N.de["pres.howto_ios"] = '<b>iPhone / iPad:</b> Kontrollzentrum öffnen, auf <i>Bildschirmsynchronisierung</i> tippen, <code class="pres-name-hint">PiScreenPortal</code> wählen.';
+window.I18N.de["pres.howto_mac"] = '<b>Mac:</b> Kontrollzentrum &rarr; Bildschirmsynchronisierung &rarr; <code class="pres-name-hint">PiScreenPortal</code>.';
+window.I18N.de["pres.howto_win"] = '<b>Windows / Android:</b> AirPlay nicht nativ verfügbar. Empfohlen: <a href="https://www.deskreen.com" target="_blank" rel="noopener">Deskreen</a> oder AirMyPC.';
+
+// ---------- Multi-monitor, keyring and UI additions ----------
+Object.assign(window.I18N.en, {
+  "dash.quick_desc": "Control every kiosk window at once.",
+  "dash.done_start": "Kiosk started.",
+  "dash.done_stop": "Kiosk stopped.",
+  "dash.done_restart": "Kiosk restarted.",
+  "dash.done_reload": "Pages reloaded.",
+  "dash.done_screen_off": "Monitors switched off.",
+  "dash.done_screen_on": "Monitors switched on.",
+  "dash.done_reboot": "Raspberry is rebooting...",
+  "dash.done_shutdown": "Raspberry is shutting down...",
+  "dash.error.no_window": "No kiosk window found. Is the kiosk running and is xdotool installed?",
+  "common.done": "Done.",
+  "common.unsaved": "Unsaved changes",
+  "common.saved_applied": "Saved and applied. Unchanged screens kept running.",
+  "common.error.cross_site": "Request blocked: it did not come from this page.",
+
+  "pill.kiosk_on": "Kiosk active",
+  "pill.kiosk_off": "Kiosk stopped",
+  "pill.presentation": "Presentation running",
+  "pill.screens": "{live}/{total} screens live",
+
+  "layout.title": "Monitor layout",
+  "layout.desc": "Each box is a connected display at its real position. The page shown on it is listed inside.",
+  "layout.identify": "Identify monitors",
+  "layout.identify_running": "Look at your displays: each one shows its number and output name for 10 seconds ({count} monitors).",
+  "layout.auto": "Assign left to right",
+  "layout.auto_done": "Screens assigned from left to right. Click \"Save and apply\" to use it.",
+  "layout.swap": "Swap screens",
+  "layout.swap_done": "Outputs swapped. Click \"Save and apply\" to use it.",
+  "layout.none": "No active monitor detected. Is a display connected and a graphical session running?",
+  "layout.no_page": "no page",
+  "layout.more_screens": "{screens} screens are enabled, but only {monitors} monitors are active.",
+  "layout.ok_hint": "Tip: use \"Identify monitors\" to see which physical display is which output.",
+
+  "screens.resolution": "Resolution",
+  "screens.res_auto": "Automatic",
+  "screens.rot_normal": "Normal (landscape)",
+  "screens.rot_left": "Left (portrait)",
+  "screens.rot_right": "Right (portrait)",
+  "screens.rot_inverted": "Upside down",
+  "screens.status_disabled": "Disabled",
+  "screens.status_presentation": "Paused (presentation)",
+  "screens.status_live": "Live on {output}",
+  "screens.status_hidden": "Not visible on {output}",
+  "screens.status_running": "Running on {output}",
+  "screens.restart_one": "Restart",
+  "screens.restart_one_hint": "Restart only this screen; other monitors keep running.",
+  "screens.restarted_one": "Screen \"{name}\" restarted.",
+  "screens.save_first": "Save your changes first.",
+  "screens.dupe_output": "Output {output} is used by more than one enabled screen.",
+  "screens.output_missing": "Output {output} is not connected right now.",
+  "screens.empty": "No screens configured yet.",
+  "screens.error.no_monitor": "No monitor found for this screen.",
+  "screens.error.unknown": "Unknown screen.",
+  "screens.auto": "Automatic",
+
+  "settings.disable_keyring": "Disable GNOME keyring (no unlock dialog, recommended)",
+  "settings.password_keep": "unchanged – type to set a new password",
+  "settings.password_new": "set a password",
+  "settings.auth_note": "The password is stored as a salted hash. Leave the field empty to keep the current password.",
+  "keyring.autostart_off": "Keyring autostart is off",
+  "keyring.autostart_on": "Keyring autostart is on",
+  "keyring.chromium_basic": "Chromium stores no passwords in the keyring",
+  "keyring.daemon_running": "a keyring daemon is still running until the next reboot",
+
+  "maint.deps_failed": "Python dependencies could not be updated; see the log.",
+});
+
+Object.assign(window.I18N.de, {
+  "dash.quick_desc": "Alle Kiosk-Fenster auf einmal steuern.",
+  "dash.done_start": "Kiosk gestartet.",
+  "dash.done_stop": "Kiosk gestoppt.",
+  "dash.done_restart": "Kiosk neu gestartet.",
+  "dash.done_reload": "Seiten neu geladen.",
+  "dash.done_screen_off": "Monitore ausgeschaltet.",
+  "dash.done_screen_on": "Monitore eingeschaltet.",
+  "dash.done_reboot": "Raspberry startet neu...",
+  "dash.done_shutdown": "Raspberry fährt herunter...",
+  "dash.error.no_window": "Kein Kiosk-Fenster gefunden. Läuft der Kiosk und ist xdotool installiert?",
+  "common.done": "Erledigt.",
+  "common.unsaved": "Ungespeicherte Änderungen",
+  "common.saved_applied": "Gespeichert und übernommen. Unveränderte Bildschirme laufen weiter.",
+  "common.error.cross_site": "Anfrage blockiert: Sie kam nicht von dieser Seite.",
+
+  "pill.kiosk_on": "Kiosk aktiv",
+  "pill.kiosk_off": "Kiosk gestoppt",
+  "pill.presentation": "Präsentation läuft",
+  "pill.screens": "{live}/{total} Bildschirme live",
+
+  "layout.title": "Monitor-Anordnung",
+  "layout.desc": "Jede Box ist ein angeschlossenes Display an seiner echten Position. Darin steht, welche Seite es zeigt.",
+  "layout.identify": "Monitore identifizieren",
+  "layout.identify_running": "Schau auf die Displays: Jedes zeigt 10 Sekunden lang seine Nummer und den Ausgangsnamen ({count} Monitore).",
+  "layout.auto": "Von links nach rechts zuordnen",
+  "layout.auto_done": "Bildschirme von links nach rechts zugeordnet. Mit \"Speichern und anwenden\" übernehmen.",
+  "layout.swap": "Bildschirme tauschen",
+  "layout.swap_done": "Ausgänge getauscht. Mit \"Speichern und anwenden\" übernehmen.",
+  "layout.none": "Kein aktiver Monitor erkannt. Ist ein Display angeschlossen und läuft eine grafische Sitzung?",
+  "layout.no_page": "keine Seite",
+  "layout.more_screens": "{screens} Bildschirme sind aktiv, aber nur {monitors} Monitore angeschlossen.",
+  "layout.ok_hint": "Tipp: Mit \"Monitore identifizieren\" siehst du, welches Display an welchem Ausgang hängt.",
+
+  "screens.resolution": "Auflösung",
+  "screens.res_auto": "Automatisch",
+  "screens.rot_normal": "Normal (quer)",
+  "screens.rot_left": "Links (hochkant)",
+  "screens.rot_right": "Rechts (hochkant)",
+  "screens.rot_inverted": "Auf dem Kopf",
+  "screens.status_disabled": "Deaktiviert",
+  "screens.status_presentation": "Pausiert (Präsentation)",
+  "screens.status_live": "Live auf {output}",
+  "screens.status_hidden": "Nicht sichtbar auf {output}",
+  "screens.status_running": "Läuft auf {output}",
+  "screens.restart_one": "Neu starten",
+  "screens.restart_one_hint": "Nur diesen Bildschirm neu starten; andere Monitore laufen weiter.",
+  "screens.restarted_one": "Bildschirm \"{name}\" neu gestartet.",
+  "screens.save_first": "Bitte zuerst speichern.",
+  "screens.dupe_output": "Ausgang {output} ist mehreren aktiven Bildschirmen zugewiesen.",
+  "screens.output_missing": "Ausgang {output} ist gerade nicht angeschlossen.",
+  "screens.empty": "Noch keine Bildschirme eingerichtet.",
+  "screens.error.no_monitor": "Kein Monitor für diesen Bildschirm gefunden.",
+  "screens.error.unknown": "Unbekannter Bildschirm.",
+  "screens.auto": "Automatisch",
+
+  "settings.disable_keyring": "GNOME-Schlüsselbund deaktivieren (kein Entsperr-Dialog, empfohlen)",
+  "settings.password_keep": "unverändert – tippen, um ein neues Passwort zu setzen",
+  "settings.password_new": "Passwort festlegen",
+  "settings.auth_note": "Das Passwort wird als gesalzener Hash gespeichert. Feld leer lassen, um das aktuelle Passwort zu behalten.",
+  "keyring.autostart_off": "Schlüsselbund-Autostart ist aus",
+  "keyring.autostart_on": "Schlüsselbund-Autostart ist an",
+  "keyring.chromium_basic": "Chromium speichert keine Passwörter im Schlüsselbund",
+  "keyring.daemon_running": "ein Schlüsselbund-Dienst läuft noch bis zum nächsten Neustart",
+
+  "maint.deps_failed": "Python-Abhängigkeiten konnten nicht aktualisiert werden, siehe Log.",
+});

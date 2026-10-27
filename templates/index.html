@@ -4,48 +4,55 @@
 <meta charset="utf-8">
 <title>PiScreenPortal</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="/static/logo.png">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<header>
-  <div class="header-inner">
+<!--DEMO_BANNER-->
+<header class="topbar">
+  <div class="topbar-inner">
     <div class="header-top">
       <button type="button" class="brand brand-home" id="brand-home" aria-label="Dashboard">
         <img src="/static/logo.png" alt="PiScreenPortal" class="brand-logo"
              onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
         <h1 style="display:none">PiScreenPortal</h1>
       </button>
-      <a class="support-link" href="https://github.com/WEXiT/PiScreenPortal"
-         target="_blank" rel="noopener noreferrer"
-         aria-label="WEXiT/PiScreenPortal on GitHub">
-        <img src="/static/support.jpg" alt="Support PiScreenPortal with a Star on GitHub"
-             class="support-image">
-        <span class="support-repo">WEXiT/PiScreenPortal</span>
-      </a>
+      <div class="status-pills" id="status-pills" aria-live="polite">
+        <span class="pill" id="pill-kiosk"><span class="dot"></span><span class="pill-text">&hellip;</span></span>
+        <span class="pill" id="pill-screens"><span class="dot"></span><span class="pill-text">&hellip;</span></span>
+        <span class="pill pill-plain" id="pill-temp"><span class="pill-text">&hellip;</span></span>
+      </div>
       <div class="lang-switch">
-        <label for="lang-select" class="muted" data-i18n="header.language">Language</label>
-        <select id="lang-select">
+        <a class="support-link" href="https://github.com/WEXiT/PiScreenPortal"
+           target="_blank" rel="noopener noreferrer"
+           aria-label="WEXiT/PiScreenPortal on GitHub">
+          <img src="/static/support.jpg" alt="Support PiScreenPortal with a Star on GitHub"
+               class="support-image">
+        </a>
+        <label for="lang-select" class="sr-only" data-i18n="header.language">Language</label>
+        <select id="lang-select" class="compact-select">
           <option value="en">English</option>
           <option value="de">Deutsch</option>
         </select>
         <div class="header-user" id="header-user" hidden>
-          <span>
+          <span class="header-user-name">
             <span data-i18n="auth.signed_in_as">Signed in as</span>
             <b id="header-user-name"></b>
           </span>
-          <button class="btn btn-logout" id="btn-logout"
+          <button class="btn btn-sm btn-logout" id="btn-logout"
                   data-i18n="auth.logout">Log out</button>
         </div>
       </div>
     </div>
-    <nav class="tabs">
-      <button class="tab active" data-tab="dashboard" data-i18n="tabs.dashboard">Dashboard</button>
-      <button class="tab" data-tab="screens" data-i18n="tabs.screens">Screens</button>
-      <button class="tab" data-tab="presentation" data-i18n="tabs.presentation">Presentation</button>
-      <button class="tab" data-tab="wifi" data-i18n="tabs.wifi">Wi-Fi</button>
-      <button class="tab" data-tab="system" data-i18n="tabs.system">System</button>
-      <button class="tab" data-tab="diagnostics" data-i18n="tabs.diagnostics">Diagnostics</button>
-      <button class="tab" data-tab="settings" data-i18n="tabs.settings">Settings</button>
+    <nav class="tabs" aria-label="Sections">
+      <button class="tab active" data-tab="dashboard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 13h8V3H3zm0 8h8v-6H3zm10 0h8V11h-8zm0-18v6h8V3z"/></svg><span data-i18n="tabs.dashboard">Dashboard</span></button>
+      <button class="tab" data-tab="screens"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 4h9v7H2zm11 0h9v7h-9zM5 13h3v2h2v2H3v-2h2zm11 0h3v2h2v2h-7v-2h2z"/></svg><span data-i18n="tabs.screens">Screens</span></button>
+      <button class="tab" data-tab="presentation"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v11H3zm7 13h4l1 2H9z"/></svg><span data-i18n="tabs.presentation">Presentation</span></button>
+      <button class="tab" data-tab="wifi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20l3.5-4.2a5 5 0 0 0-7 0zm-7-8.4 2 2.4a8 8 0 0 1 10 0l2-2.4a11 11 0 0 0-14 0zM1 7.2 3 9.6a14 14 0 0 1 18 0l2-2.4a17 17 0 0 0-22 0z"/></svg><span data-i18n="tabs.wifi">Wi-Fi</span></button>
+      <button class="tab" data-tab="system"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 2h2v3h6V2h2v3h3v15H4V5h3zm-1 8v8h12v-8z"/></svg><span data-i18n="tabs.system">System</span></button>
+      <button class="tab" data-tab="diagnostics"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 2a8 8 0 0 1 6.3 12.9l5.4 5.4-1.4 1.4-5.4-5.4A8 8 0 1 1 10 2zm0 2a6 6 0 1 0 0 12 6 6 0 0 0 0-12z"/></svg><span data-i18n="tabs.diagnostics">Diagnostics</span></button>
+      <button class="tab" data-tab="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.3 2h3.4l.5 2.6 1.9.8 2.2-1.5 2.4 2.4-1.5 2.2.8 1.9 2.6.5v3.4l-2.6.5-.8 1.9 1.5 2.2-2.4 2.4-2.2-1.5-1.9.8-.5 2.6h-3.4l-.5-2.6-1.9-.8-2.2 1.5-2.4-2.4 1.5-2.2-.8-1.9L2 13.7v-3.4l2.6-.5.8-1.9-1.5-2.2 2.4-2.4 2.2 1.5 1.9-.8zM12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg><span data-i18n="tabs.settings">Settings</span></button>
     </nav>
   </div>
 </header>
@@ -53,88 +60,117 @@
 <main>
   <!-- DASHBOARD -->
   <section class="tab-content active" id="tab-dashboard">
-    <div class="card">
-      <h2 data-i18n="dash.quick">Quick actions</h2>
+    <div class="card hero-card">
+      <div class="hero-head">
+        <div>
+          <h2 data-i18n="dash.quick">Quick actions</h2>
+          <p class="muted" data-i18n="dash.quick_desc">Control every kiosk window at once.</p>
+        </div>
+      </div>
       <div class="btn-row">
         <button data-act="start" class="btn primary" data-i18n="dash.start">Start kiosk</button>
         <button data-act="restart" class="btn" data-i18n="dash.restart">Restart</button>
-        <button data-act="stop" class="btn warn" data-i18n="dash.stop">Stop</button>
         <button data-act="reload" class="btn" data-i18n="dash.reload">Reload page</button>
+        <button data-act="stop" class="btn warn" data-i18n="dash.stop">Stop</button>
+        <span class="btn-sep" aria-hidden="true"></span>
         <button data-act="screen-off" class="btn" data-i18n="dash.screen_off">Monitor off</button>
         <button data-act="screen-on" class="btn" data-i18n="dash.screen_on">Monitor on</button>
       </div>
-      <div class="btn-row" style="margin-top:12px">
+      <div class="btn-row danger-row">
         <button data-act="reboot" class="btn danger" data-i18n="dash.reboot">Reboot Raspberry</button>
         <button data-act="shutdown" class="btn danger" data-i18n="dash.shutdown">Shutdown Raspberry</button>
       </div>
     </div>
 
-    <div class="card">
-      <h2 data-i18n="dash.overview">Overview</h2>
-      <div id="sysinfo" class="sysinfo" data-i18n="common.loading">Loading...</div>
+    <div class="dash-grid">
+      <div class="card">
+        <h2 data-i18n="dash.screen_status">Screen status</h2>
+        <div id="screen-status" class="sysinfo" data-i18n="common.loading">Loading...</div>
+      </div>
+
+      <div class="card">
+        <h2 data-i18n="dash.overview">Overview</h2>
+        <div id="sysinfo" class="sysinfo" data-i18n="common.loading">Loading...</div>
+      </div>
     </div>
 
-    <div class="card">
-      <h2 data-i18n="dash.screen_status">Screen status</h2>
-      <div id="screen-status" class="sysinfo" data-i18n="common.loading">Loading...</div>
-    </div>
+    <div class="dash-grid">
+      <div class="card">
+        <div class="flex-between">
+          <h2 data-i18n="dash.services">Services &amp; tools</h2>
+          <button id="services-refresh" class="btn btn-sm"
+                  data-i18n="common.refresh">Refresh</button>
+        </div>
+        <p class="muted" id="services-session" data-i18n="common.loading">Loading...</p>
+        <div id="services-list" class="services-list" data-i18n="common.loading">Loading...</div>
+      </div>
 
-    <div class="card">
-      <div class="flex-between">
-        <h2 data-i18n="dash.services">Services &amp; tools</h2>
-        <button id="services-refresh" class="btn"
-                data-i18n="common.refresh">Refresh</button>
+      <div class="card" id="power-card">
+        <div class="flex-between">
+          <h2 data-i18n="power.title">Energy &amp; 24/7 mode</h2>
+          <span id="power-overall" class="svc-state" data-i18n="common.loading">Loading...</span>
+        </div>
+        <p class="muted" data-i18n="power.desc">
+          For reliable 24/7 kiosk operation, Wi-Fi power saving and screen
+          blanking must be off. Otherwise the Pi drops the AP after a few
+          minutes idle, or the screen turns black.
+        </p>
+        <div id="power-list" class="services-list" data-i18n="common.loading">Loading...</div>
+        <div class="btn-row" style="margin-top:14px">
+          <button id="power-refresh" class="btn btn-sm" data-i18n="common.refresh">Refresh</button>
+          <button id="power-force" class="btn btn-sm primary"
+                  data-i18n="power.force">Force 24/7 mode now</button>
+        </div>
+        <p id="power-msg" class="muted" style="margin-top:8px"></p>
       </div>
-      <p class="muted" id="services-session" data-i18n="common.loading">Loading...</p>
-      <div id="services-list" class="services-list" data-i18n="common.loading">Loading...</div>
-    </div>
-
-    <div class="card" id="power-card">
-      <div class="flex-between">
-        <h2 data-i18n="power.title">Energy &amp; 24/7 mode</h2>
-        <span id="power-overall" class="svc-state" data-i18n="common.loading">Loading...</span>
-      </div>
-      <p class="muted" data-i18n="power.desc">
-        For reliable 24/7 kiosk operation, Wi-Fi power saving and screen
-        blanking must be off. Otherwise the Pi drops the AP after a few
-        minutes idle, or the screen turns black.
-      </p>
-      <div id="power-list" class="services-list" data-i18n="common.loading">Loading...</div>
-      <div class="btn-row" style="margin-top:14px">
-        <button id="power-refresh" class="btn" data-i18n="common.refresh">Refresh</button>
-        <button id="power-force" class="btn primary"
-                data-i18n="power.force">Force 24/7 mode now</button>
-      </div>
-      <p id="power-msg" class="muted" style="margin-top:8px"></p>
     </div>
   </section>
 
   <!-- SCREENS -->
   <section class="tab-content" id="tab-screens">
     <div class="card">
-      <h2 data-i18n="screens.detected">Detected monitors</h2>
-      <div class="table-wrap">
-        <table id="monitors">
-          <thead><tr>
-            <th data-i18n="screens.col_name">Name</th>
-            <th data-i18n="screens.col_primary">Primary</th>
-            <th data-i18n="screens.col_resolution">Resolution</th>
-            <th data-i18n="screens.col_position">Position</th>
-            <th data-i18n="screens.col_status">Status</th>
-          </tr></thead>
-          <tbody></tbody>
-        </table>
+      <div class="flex-between">
+        <div>
+          <h2 data-i18n="layout.title">Monitor layout</h2>
+          <p class="muted" data-i18n="layout.desc">Each box is a connected display at its real position. The page shown on it is listed inside.</p>
+        </div>
+        <div class="btn-row">
+          <button id="layout-identify" class="btn btn-sm primary" data-i18n="layout.identify">Identify monitors</button>
+          <button id="layout-auto" class="btn btn-sm" data-i18n="layout.auto">Assign left to right</button>
+          <button id="layout-swap" class="btn btn-sm" data-i18n="layout.swap" hidden>Swap screens</button>
+          <button id="layout-refresh" class="btn btn-sm" data-i18n="common.refresh">Refresh</button>
+        </div>
       </div>
-      <p class="muted" data-i18n="screens.sorted">Sorted by X position from left to right.</p>
-      <p class="muted" data-i18n="screens.hotplug_hint">For two-screen installations, assign each page to a fixed HDMI output so an unplugged display cannot take over the other page.</p>
+      <div id="layout-map" class="layout-map" aria-live="polite"></div>
+      <p id="layout-hint" class="muted layout-hint"></p>
+
+      <details class="monitor-details">
+        <summary data-i18n="screens.detected">Detected monitors</summary>
+        <div class="table-wrap">
+          <table id="monitors">
+            <thead><tr>
+              <th data-i18n="screens.col_name">Name</th>
+              <th data-i18n="screens.col_primary">Primary</th>
+              <th data-i18n="screens.col_resolution">Resolution</th>
+              <th data-i18n="screens.col_position">Position</th>
+              <th data-i18n="screens.col_status">Status</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="muted" data-i18n="screens.sorted">Sorted by X position from left to right.</p>
+      </details>
     </div>
 
     <div class="card">
       <div class="flex-between">
-        <h2 data-i18n="screens.config">Screen configuration</h2>
-        <button id="add-screen" class="btn" data-i18n="screens.add">Add screen</button>
+        <div>
+          <h2 data-i18n="screens.config">Screen configuration</h2>
+          <p class="muted" data-i18n="screens.hotplug_hint">For two-screen installations, assign each page to a fixed HDMI output so an unplugged display cannot take over the other page.</p>
+        </div>
+        <button id="add-screen" class="btn btn-sm" data-i18n="screens.add">Add screen</button>
       </div>
-      <div id="screens"></div>
+      <div id="screens" class="screen-list"></div>
     </div>
   </section>
 
@@ -153,29 +189,31 @@
       <p id="pres-msg" class="muted"></p>
     </div>
 
-    <div class="card">
-      <h2 data-i18n="pres.howto">How to connect</h2>
-      <ol>
-        <li data-i18n-html="pres.howto_ios"><b>iPhone / iPad:</b> open Control Center, tap <i>Screen Mirroring</i>, choose <code id="pres-name-hint">PiScreenPortal</code>.</li>
-        <li data-i18n-html="pres.howto_mac"><b>Mac:</b> Control Center &rarr; Screen Mirroring &rarr; <code>PiScreenPortal</code>.</li>
-        <li data-i18n-html="pres.howto_win"><b>Windows / Android:</b> AirPlay is not natively supported. Recommended: <a href="https://www.deskreen.com" target="_blank">Deskreen</a> or AirMyPC.</li>
-      </ol>
-    </div>
+    <div class="dash-grid">
+      <div class="card">
+        <h2 data-i18n="pres.howto">How to connect</h2>
+        <ol class="howto">
+          <li data-i18n-html="pres.howto_ios"><b>iPhone / iPad:</b> open Control Center, tap <i>Screen Mirroring</i>, choose <code class="pres-name-hint">PiScreenPortal</code>.</li>
+          <li data-i18n-html="pres.howto_mac"><b>Mac:</b> Control Center &rarr; Screen Mirroring &rarr; <code class="pres-name-hint">PiScreenPortal</code>.</li>
+          <li data-i18n-html="pres.howto_win"><b>Windows / Android:</b> AirPlay is not natively supported. Recommended: <a href="https://www.deskreen.com" target="_blank" rel="noopener">Deskreen</a> or AirMyPC.</li>
+        </ol>
+      </div>
 
-    <div class="card">
-      <h2 data-i18n="pres.settings">Settings</h2>
-      <label data-i18n="pres.name_label">AirPlay name (how the Pi appears in the device list)
-        <input type="text" id="pres-name" placeholder="PiScreenPortal">
-      </label>
-      <label data-i18n="pres.resolution">Resolution
-        <select id="pres-resolution">
-          <option>1920x1080</option>
-          <option>1280x720</option>
-          <option>3840x2160</option>
-          <option>2560x1440</option>
-        </select>
-      </label>
-      <label class="check"><input type="checkbox" id="pres-stop-kiosk"> <span data-i18n="pres.pause_kiosk">Pause kiosk while presenting (recommended)</span></label>
+      <div class="card">
+        <h2 data-i18n="pres.settings">Settings</h2>
+        <label data-i18n="pres.name_label">AirPlay name (how the Pi appears in the device list)
+          <input type="text" id="pres-name" placeholder="PiScreenPortal" maxlength="60">
+        </label>
+        <label data-i18n="pres.resolution">Resolution
+          <select id="pres-resolution">
+            <option>1920x1080</option>
+            <option>1280x720</option>
+            <option>3840x2160</option>
+            <option>2560x1440</option>
+          </select>
+        </label>
+        <label class="check"><input type="checkbox" id="pres-stop-kiosk"> <span data-i18n="pres.pause_kiosk">Pause kiosk while presenting (recommended)</span></label>
+      </div>
     </div>
   </section>
 
@@ -190,27 +228,31 @@
       </div>
     </div>
 
+    <div class="dash-grid">
+      <div class="card">
+        <h2 data-i18n="wifi.available">Available networks</h2>
+        <div id="wifi-list" class="wifi-list" data-i18n="common.scanning">Scanning...</div>
+      </div>
+
+      <div class="card">
+        <h2 data-i18n="wifi.saved">Saved Wi-Fi profiles</h2>
+        <div id="wifi-saved" class="wifi-list" data-i18n="common.loading">Loading...</div>
+      </div>
+    </div>
+
     <div class="card">
       <h2 data-i18n="wifi.add_title">Add Wi-Fi manually</h2>
       <p class="muted" data-i18n="wifi.add_desc">For hidden networks or networks currently out of range. The profile is saved and will auto-connect when in range.</p>
-      <label>SSID <input type="text" id="wifi-add-ssid" placeholder="MyWiFi"></label>
-      <label data-i18n="wifi.password">Password <input type="password" id="wifi-add-password" placeholder=""></label>
+      <div class="grid-2">
+        <label>SSID <input type="text" id="wifi-add-ssid" placeholder="MyWiFi" autocomplete="off"></label>
+        <label data-i18n="wifi.password">Password <input type="password" id="wifi-add-password" placeholder="" autocomplete="new-password"></label>
+      </div>
       <label class="check"><input type="checkbox" id="wifi-add-hidden"> <span data-i18n="wifi.hidden">SSID is hidden</span></label>
       <label class="check"><input type="checkbox" id="wifi-add-autoconnect" checked> <span data-i18n="wifi.autoconnect">Auto-connect at boot</span></label>
       <div class="btn-row">
         <button id="wifi-add-btn" class="btn primary" data-i18n="wifi.save">Save Wi-Fi</button>
       </div>
       <p id="wifi-add-msg" class="muted"></p>
-    </div>
-
-    <div class="card">
-      <h2 data-i18n="wifi.saved">Saved Wi-Fi profiles</h2>
-      <div id="wifi-saved" class="wifi-list" data-i18n="common.loading">Loading...</div>
-    </div>
-
-    <div class="card">
-      <h2 data-i18n="wifi.available">Available networks</h2>
-      <div id="wifi-list" class="wifi-list" data-i18n="common.scanning">Scanning...</div>
     </div>
   </section>
 
@@ -222,7 +264,7 @@
     </div>
     <div class="card">
       <h2>Log</h2>
-      <pre id="log" data-i18n="common.loading">Loading...</pre>
+      <pre id="log" class="log-view" data-i18n="common.loading">Loading...</pre>
     </div>
     <div class="card">
       <h2 data-i18n="system.processes">Running processes</h2>
@@ -235,7 +277,7 @@
     <div class="card">
       <div class="flex-between">
         <h2 data-i18n="diag.title">Display diagnosis</h2>
-        <button id="diagnostics-refresh" class="btn primary"
+        <button id="diagnostics-refresh" class="btn btn-sm primary"
                 data-i18n="diag.run">Run analysis now</button>
       </div>
       <p class="muted" data-i18n="diag.desc">Run this while a page is missing. It captures the detected displays, Chromium windows, and the latest kiosk log entries.</p>
@@ -264,51 +306,73 @@
 
   <!-- SETTINGS -->
   <section class="tab-content" id="tab-settings">
-    <div class="card">
-      <h2 data-i18n="settings.general">General</h2>
-      <label class="check"><input type="checkbox" id="auto_start"> <span data-i18n="settings.autostart">Start automatically at boot</span></label>
-      <label class="check"><input type="checkbox" id="restart_on_crash"> <span data-i18n="settings.crash_restart">Restart Chromium on crash</span></label>
-      <label>Port <small class="muted" data-i18n="settings.port_note">(service restart required)</small>
-        <input type="number" id="port" min="1" max="65535">
-      </label>
-      <label data-i18n="settings.flags">Chromium flags <small class="muted" data-i18n="settings.flags_note">(one per line)</small>
-        <textarea id="chromium_flags" rows="6"></textarea>
-      </label>
-    </div>
-
-    <div class="card">
-      <div class="flex-between">
-        <h2 data-i18n="maint.title">Maintenance</h2>
-        <span id="maintenance-next" class="svc-state" data-i18n="maint.status_unknown">Unknown</span>
-      </div>
-      <label class="check"><input type="checkbox" id="auto_reboot_enabled"> <span data-i18n="maint.auto_reboot">Automatic Raspberry restart</span></label>
-      <label data-i18n="maint.mode">Restart mode
-        <select id="auto_reboot_mode">
-          <option value="daily" data-i18n="maint.mode_daily">Daily at time</option>
-          <option value="interval" data-i18n="maint.mode_interval">Every x minutes</option>
-        </select>
-      </label>
-      <div class="grid-2 compact-grid">
-        <label id="auto_reboot_interval_wrap" data-i18n="maint.interval_minutes">Interval in minutes
-          <input type="number" id="auto_reboot_interval" min="1" max="43200" step="1">
+    <div class="dash-grid">
+      <div class="card">
+        <h2 data-i18n="settings.general">General</h2>
+        <label class="check"><input type="checkbox" id="auto_start"> <span data-i18n="settings.autostart">Start automatically at boot</span></label>
+        <label class="check"><input type="checkbox" id="restart_on_crash"> <span data-i18n="settings.crash_restart">Restart Chromium on crash</span></label>
+        <label class="check"><input type="checkbox" id="disable_keyring"> <span data-i18n="settings.disable_keyring">Disable GNOME keyring (no unlock dialog, recommended)</span></label>
+        <p class="muted setting-note" id="keyring-status"></p>
+        <label>Port <small class="muted" data-i18n="settings.port_note">(service restart required)</small>
+          <input type="number" id="port" min="1" max="65535">
         </label>
-        <label id="auto_reboot_time_wrap" data-i18n="maint.daily_time">Time
-          <input type="time" id="auto_reboot_time">
+        <label data-i18n="settings.flags">Chromium flags <small class="muted" data-i18n="settings.flags_note">(one per line)</small>
+          <textarea id="chromium_flags" rows="6" spellcheck="false"></textarea>
         </label>
       </div>
-      <div class="btn-row" style="margin-top:14px">
-        <button id="maintenance-refresh" class="btn" data-i18n="common.refresh">Refresh</button>
+
+      <div class="card">
+        <h2 data-i18n="settings.auth">Access protection</h2>
+        <label class="check"><input type="checkbox" id="auth_enabled"> <span data-i18n="settings.auth_enable">Protect web interface with password</span></label>
+        <label data-i18n="settings.username">Username <input type="text" id="auth_username" autocomplete="username"></label>
+        <label data-i18n="settings.password">Password <input type="password" id="auth_password" autocomplete="new-password"></label>
+        <p class="muted" data-i18n="settings.auth_note">The password is stored as a salted hash. Leave the field empty to keep the current password.</p>
+
+        <h2 class="card-subtitle" data-i18n="settings.backup">Backup configuration</h2>
+        <div class="btn-row">
+          <button id="export-config" class="btn btn-sm" data-i18n="settings.export">Export config</button>
+        </div>
+        <label style="margin-top:12px" data-i18n="settings.import">Import config (JSON file)
+          <input type="file" id="import-file" accept="application/json">
+        </label>
       </div>
-      <p id="maintenance-msg" class="muted" style="margin-top:8px"></p>
     </div>
 
-    <div class="card">
-      <h2 data-i18n="boot.title">Boot display</h2>
-      <p class="muted" data-i18n="boot.desc">Hide desktop icons, panel, cursor, and the early desktop flash behind a black boot cover.</p>
-      <div class="btn-row" style="margin-top:14px">
-        <button id="boot-optimize" class="btn" data-i18n="boot.optimize">Hide desktop at boot</button>
+    <div class="dash-grid">
+      <div class="card">
+        <div class="flex-between">
+          <h2 data-i18n="maint.title">Maintenance</h2>
+          <span id="maintenance-next" class="svc-state" data-i18n="maint.status_unknown">Unknown</span>
+        </div>
+        <label class="check"><input type="checkbox" id="auto_reboot_enabled"> <span data-i18n="maint.auto_reboot">Automatic Raspberry restart</span></label>
+        <label data-i18n="maint.mode">Restart mode
+          <select id="auto_reboot_mode">
+            <option value="daily" data-i18n="maint.mode_daily">Daily at time</option>
+            <option value="interval" data-i18n="maint.mode_interval">Every x minutes</option>
+          </select>
+        </label>
+        <div class="grid-2 compact-grid">
+          <label id="auto_reboot_interval_wrap" data-i18n="maint.interval_minutes">Interval in minutes
+            <input type="number" id="auto_reboot_interval" min="1" max="43200" step="1">
+          </label>
+          <label id="auto_reboot_time_wrap" data-i18n="maint.daily_time">Time
+            <input type="time" id="auto_reboot_time">
+          </label>
+        </div>
+        <div class="btn-row" style="margin-top:14px">
+          <button id="maintenance-refresh" class="btn btn-sm" data-i18n="common.refresh">Refresh</button>
+        </div>
+        <p id="maintenance-msg" class="muted" style="margin-top:8px"></p>
       </div>
-      <p id="boot-msg" class="muted" style="margin-top:8px"></p>
+
+      <div class="card">
+        <h2 data-i18n="boot.title">Boot display</h2>
+        <p class="muted" data-i18n="boot.desc">Hide desktop icons, panel, cursor, and the early desktop flash behind a black boot cover.</p>
+        <div class="btn-row" style="margin-top:14px">
+          <button id="boot-optimize" class="btn" data-i18n="boot.optimize">Hide desktop at boot</button>
+        </div>
+        <p id="boot-msg" class="muted" style="margin-top:8px"></p>
+      </div>
     </div>
 
     <div class="card">
@@ -339,37 +403,22 @@
         <p id="system-updates-msg" class="muted" style="margin-top:8px"></p>
       </div>
     </div>
-
-    <div class="card">
-      <h2 data-i18n="settings.auth">Access protection</h2>
-      <label class="check"><input type="checkbox" id="auth_enabled"> <span data-i18n="settings.auth_enable">Protect web interface with password</span></label>
-      <label data-i18n="settings.username">Username <input type="text" id="auth_username"></label>
-      <label data-i18n="settings.password">Password <input type="text" id="auth_password"></label>
-      <p class="muted" data-i18n="settings.auth_note">Simple HTTP basic auth. Password stored in plain text &ndash; do not reuse an important one.</p>
-    </div>
-
-    <div class="card">
-      <h2 data-i18n="settings.backup">Backup configuration</h2>
-      <div class="btn-row">
-        <a href="/api/config/export" class="btn" data-i18n="settings.export">Export config</a>
-      </div>
-      <label style="margin-top:12px" data-i18n="settings.import">Import config (JSON file)
-        <input type="file" id="import-file" accept="application/json">
-      </label>
-    </div>
   </section>
 </main>
 
 <div class="save-bar">
-  <button id="save" class="btn primary" data-i18n="common.save">Save and apply</button>
-  <span id="msg"></span>
+  <div class="save-bar-inner">
+    <span id="dirty-hint" class="dirty-hint" hidden data-i18n="common.unsaved">Unsaved changes</span>
+    <span id="msg" role="status"></span>
+    <button id="save" class="btn primary" data-i18n="common.save">Save and apply</button>
+  </div>
 </div>
 
 <!-- Wi-Fi password modal -->
 <div class="modal" id="wifi-modal" hidden>
-  <div class="modal-inner">
-    <h3 data-i18n="wifi.connect_to">Connect to Wi-Fi</h3>
-    <p id="wifi-modal-ssid"></p>
+  <div class="modal-inner" role="dialog" aria-modal="true" aria-labelledby="wifi-modal-title">
+    <h3 id="wifi-modal-title" data-i18n="wifi.connect_to">Connect to Wi-Fi</h3>
+    <p id="wifi-modal-ssid" class="modal-ssid"></p>
     <label data-i18n="wifi.password">Password <input type="password" id="wifi-password" autocomplete="off"></label>
     <div class="btn-row">
       <button id="wifi-cancel" class="btn" data-i18n="common.cancel">Cancel</button>
@@ -379,8 +428,10 @@
   </div>
 </div>
 
+<div id="toasts" class="toasts" aria-live="polite"></div>
+
 <footer>
-  <span>&copy; Dennis Reuther 2026</span>
+  <span>&copy; Dennis Reuther 2026 &middot; PiScreenPortal <span id="app-version"></span></span>
 </footer>
 
 <script src="/static/i18n.js"></script>
