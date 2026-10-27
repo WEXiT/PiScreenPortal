@@ -5,6 +5,9 @@
 <title>PiScreenPortal &ndash; Login</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light dark">
+<script>
+  try { document.documentElement.dataset.theme = localStorage.getItem("pisp_theme") === "dark" ? "dark" : "light"; } catch (e) {}
+</script>
 <link rel="icon" href="/static/logo.png">
 <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -52,8 +55,7 @@
 (function () {
   var lang = null;
   try { lang = localStorage.getItem("pisp_lang"); } catch (e) {}
-  if (!lang) lang = /^de\b/i.test(navigator.language || "") ? "de" : "en";
-  if (lang !== "de") return;
+  if (lang !== "de") return;   // Standard: Englisch
   var de = {
     sub: "Zum Fortfahren anmelden",
     error: "Benutzername oder Passwort ist falsch.",

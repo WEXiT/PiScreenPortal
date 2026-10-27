@@ -588,9 +588,8 @@ window.I18N = {
 window.I18N.lang = (function () {
   let stored = null;
   try { stored = localStorage.getItem("pisp_lang"); } catch (e) {}
-  if (stored && window.I18N[stored]) return stored;
-  // Ohne gespeicherte Wahl die Browsersprache verwenden.
-  return /^de\b/i.test(navigator.language || "") ? "de" : "en";
+  // Standard ist Englisch; Deutsch nur nach Auswahl im Header.
+  return stored && window.I18N[stored] ? stored : "en";
 })();
 
 window.t = function (key, params) {
@@ -726,6 +725,39 @@ Object.assign(window.I18N.en, {
   "keyring.daemon_running": "a keyring daemon is still running until the next reboot",
 
   "maint.deps_failed": "Python dependencies could not be updated; see the log.",
+
+  "common.discard": "Discard",
+  "common.discarded": "Changes discarded.",
+  "theme.to_dark": "Switch to dark mode",
+  "theme.to_light": "Switch to light mode",
+  "page.screens": "Which page runs on which monitor.",
+  "page.wifi": "Connect the Raspberry to a wireless network.",
+  "page.system": "Hardware, log and running processes.",
+  "page.settings": "Changes are saved with the bar that appears at the bottom.",
+  "dash.start_desc": "Open the pages on all monitors",
+  "dash.restart_desc": "Close and reopen every page",
+  "dash.reload_desc": "Refresh the pages (F5)",
+  "dash.stop_desc": "Close all kiosk pages",
+  "dash.screen_off_desc": "Put the displays to standby",
+  "dash.screen_on_desc": "Wake the displays up",
+  "dash.power_desc": "Raspberry Pi power",
+  "dash.confirm_stop": "All kiosk pages will be closed until you start the kiosk again.",
+  "hero.all_ok": "Everything is running",
+  "hero.all_ok_sub": "All {total} screens are live.",
+  "hero.attention": "{count} screen(s) need attention",
+  "hero.attention_sub": "{live} of {total} screens are live. Check the monitor layout.",
+  "hero.stopped": "Kiosk is stopped",
+  "hero.stopped_sub": "No pages are shown on the monitors right now.",
+  "hero.presentation": "Presentation is running",
+  "hero.presentation_sub": "The kiosk is paused until the presentation ends.",
+  "hero.no_screens": "No screen is enabled",
+  "hero.no_screens_sub": "Add a screen and choose the page it should show.",
+  "hero.open_screens": "Open screens",
+  "hero.open_presentation": "Open presentation",
+  "hero.monitors": "{count} monitor(s) connected",
+  "screens.open_url": "Open page",
+  "screens.open_url_hint": "Open this address in a new browser tab to check it",
+  "screens.remove_title": "Remove \"{name}\"?",
 });
 
 Object.assign(window.I18N.de, {
@@ -794,4 +826,37 @@ Object.assign(window.I18N.de, {
   "keyring.daemon_running": "ein Schlüsselbund-Dienst läuft noch bis zum nächsten Neustart",
 
   "maint.deps_failed": "Python-Abhängigkeiten konnten nicht aktualisiert werden, siehe Log.",
+
+  "common.discard": "Verwerfen",
+  "common.discarded": "Änderungen verworfen.",
+  "theme.to_dark": "Dunkles Design",
+  "theme.to_light": "Helles Design",
+  "page.screens": "Welche Seite auf welchem Monitor läuft.",
+  "page.wifi": "Den Raspberry mit einem WLAN verbinden.",
+  "page.system": "Hardware, Log und laufende Prozesse.",
+  "page.settings": "Änderungen speicherst du mit der Leiste, die unten erscheint.",
+  "dash.start_desc": "Seiten auf allen Monitoren öffnen",
+  "dash.restart_desc": "Alle Seiten schließen und neu öffnen",
+  "dash.reload_desc": "Seiten aktualisieren (F5)",
+  "dash.stop_desc": "Alle Kiosk-Seiten schließen",
+  "dash.screen_off_desc": "Displays in Standby schalten",
+  "dash.screen_on_desc": "Displays wieder aufwecken",
+  "dash.power_desc": "Raspberry Pi ein/aus",
+  "dash.confirm_stop": "Alle Kiosk-Seiten werden geschlossen, bis du den Kiosk wieder startest.",
+  "hero.all_ok": "Alles läuft",
+  "hero.all_ok_sub": "Alle {total} Bildschirme sind live.",
+  "hero.attention": "{count} Bildschirm(e) brauchen Aufmerksamkeit",
+  "hero.attention_sub": "{live} von {total} Bildschirmen sind live. Prüfe die Monitor-Anordnung.",
+  "hero.stopped": "Kiosk ist gestoppt",
+  "hero.stopped_sub": "Auf den Monitoren wird gerade keine Seite angezeigt.",
+  "hero.presentation": "Präsentation läuft",
+  "hero.presentation_sub": "Der Kiosk pausiert, bis die Präsentation endet.",
+  "hero.no_screens": "Kein Bildschirm aktiviert",
+  "hero.no_screens_sub": "Füge einen Bildschirm hinzu und wähle die Seite, die er zeigen soll.",
+  "hero.open_screens": "Bildschirme öffnen",
+  "hero.open_presentation": "Präsentation öffnen",
+  "hero.monitors": "{count} Monitor(e) angeschlossen",
+  "screens.open_url": "Seite öffnen",
+  "screens.open_url_hint": "Diese Adresse zum Prüfen in einem neuen Browser-Tab öffnen",
+  "screens.remove_title": "\"{name}\" entfernen?",
 });

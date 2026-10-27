@@ -32,19 +32,29 @@ Raspberry Pi · Digital Signage · Kiosk Mode · Multi Monitor · AirPlay · Web
 - **Easy two-monitor setup** – live monitor map, *Identify monitors* (shows a big number on every display), *Assign left to right*, *Swap screens*, and warnings for double-assigned or unplugged outputs
 - **Gentle apply** – saving only restarts the screens you changed; the other monitor keeps running. Each screen can also be restarted on its own
 - **Hotplug-safe** – an unplugged display never takes over the other page; reconnected displays get their last working mode back
-- **Web interface on port 2411** – manage everything from your phone or laptop, light and dark mode
+- **Web interface on port 2411** – manage everything from your phone or laptop; light design by default, dark mode with one click
 - **AirPlay receiver** – iPhone/iPad/Mac users tap *Screen Mirroring* → presentation in seconds; the kiosk resumes automatically afterwards
 - **Wi-Fi management** – scan, connect, manually add hidden SSIDs, list and remove saved profiles
 - **System monitoring** – CPU temperature, load, RAM, disk, logs, running processes, display diagnosis
 - **Auto-start on boot**, Chromium crash-recovery, configurable Chromium flags
 - **Maintenance controls** – scheduled Raspberry reboot, app and Raspberry Pi OS updates from the web interface, and a black boot cover to hide the desktop flash
-- **Bilingual UI** – English and German (follows the browser language), switchable in the header
+- **Bilingual UI** – English (default) and German, switchable in the header
 - **Password protection** with a proper login page and session cookie (stay signed in for 14 days); the password is stored as a salted PBKDF2 hash
 - **No keyring dialogs** – the GNOME keyring autostart is disabled by default and Chromium never uses the keyring (can be switched in *Settings*)
 - **Crash-safe configuration** – `config.json` is written atomically and the previous version is kept as `config.json.bak`
 - **Import / export configuration** as JSON
 
-## What's new in v4.0.0
+## What's new in v4.1.0
+
+- 🧭 **Status at a glance** – the dashboard says in one line whether everything is running ("Everything is running", "1 screen needs attention", "Kiosk is stopped") and offers the matching next step
+- 🧱 **Clear action tiles** – Start, Restart, Reload, Stop, Monitor off/on, each with a short explanation
+- 🎨 **Cleaner design** – light theme by default with a dark-mode switch, centered navigation, centered GitHub support banner
+- 💾 **Save bar only when needed** – appears as soon as something changed, with *Discard* to undo
+- ✅ **Confirmation dialogs** inside the page instead of browser pop-ups
+- 🔗 **Open page** link next to every screen URL to check it in your browser
+- 🌍 English is the default language (German stays one click away)
+
+### v4.0.0
 
 - 🖥️ **Monitor layout map**, **Identify monitors**, **Assign left to right** and **Swap screens** – two-monitor setups in a few clicks
 - 📐 Per-screen **resolution** and per-screen **restart**
@@ -54,7 +64,7 @@ Raspberry Pi · Digital Signage · Kiosk Mode · Multi Monitor · AirPlay · Web
 - 🔐 **Keyring disabled by default** – no more "unlock keyring" dialog over the kiosk
 - 🐛 Many fixes: first start with one monitor, rotation reset, reload, AirPlay resume, and more
 
-Full list: [release notes](https://github.com/WEXiT/PiScreenPortal/releases/latest).
+All changes: [release notes](https://github.com/WEXiT/PiScreenPortal/releases).
 
 ## Demo
 
@@ -223,9 +233,14 @@ Via SSH:
 cd ~/PiScreenPortal && git pull --ff-only origin main && sudo systemctl restart pi-kiosk
 ```
 
-**Publishing a new version:** increment the number in `VERSION` (the updater
-compares this file), commit and push it with the code changes, then optionally
-create a GitHub release (`v4.0.0`, `v4.1.0`, …).
+**Publishing a new version:** increment the build number in `VERSION` (the
+updater compares this file; it is shown as *build N* in the footer), commit and
+push it with the code changes, then create a GitHub release (`v4.1.0`, …).
+
+| Release | Build (`VERSION`) |
+|---|---|
+| v4.1.0 | 10 |
+| v4.0.0 | 9 |
 
 ## Service management
 
