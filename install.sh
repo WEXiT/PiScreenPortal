@@ -56,8 +56,15 @@ apt_install python3 python3-venv python3-pip python3-dev \
 # --------------------------------------------------
 echo ">>> [3/7] Kiosk tools"
 # Install base tools first (without Chromium).
-apt_install x11-xserver-utils xdotool wmctrl unclutter fonts-dejavu \
+apt_install x11-xserver-utils xdotool wmctrl fonts-dejavu iw \
             network-manager avahi-daemon avahi-utils
+# The cursor hider is packaged as "unclutter" or "unclutter-xfixes"
+# depending on the release. A missing one must not abort the installer.
+if ! need_cmd unclutter; then
+    sudo apt-get install -y unclutter 2>/dev/null \
+        || sudo apt-get install -y unclutter-xfixes 2>/dev/null \
+        || echo ">>> unclutter is not available; the cursor stays visible."
+fi
 
 # Chromium package names differ between distributions.
 CHROMIUM_PKG=""
@@ -112,12 +119,23 @@ fi
 # 5. Python venv + Flask + qrcode
 # --------------------------------------------------
 echo ">>> [5/7] Python environment"
+if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)'; then
+    echo "!!! Python 3.9 or newer is required (found $(python3 --version 2>&1))."
+    exit 1
+fi
+if [ -d "$DIR/venv" ] && ! "$DIR/venv/bin/python" -c 'import sys' >/dev/null 2>&1; then
+    # A venv from an older OS release (e.g. after a Bookworm -> Trixie
+    # upgrade) points to a Python that no longer exists.
+    echo ">>> Existing venv is broken, recreating it."
+    rm -rf "$DIR/venv"
+fi
 if [ ! -d "$DIR/venv" ]; then
     python3 -m venv "$DIR/venv"
 fi
 "$DIR/venv/bin/pip" install --upgrade pip --quiet
-"$DIR/venv/bin/pip" install -r "$DIR/requirements.txt"
-"$DIR/venv/bin/python" -c "import flask, qrcode; print('>>> Python deps ok')"
+"$DIR/venv/bin/pip" install --upgrade -r "$DIR/requirements.txt"
+"$DIR/venv/bin/python" -c "from importlib.metadata import version; import flask, qrcode, PIL; print('>>> Python deps ok: Flask', version('flask'), '| qrcode', version('qrcode'), '| Pillow', version('pillow'))"
+chown -R "$USER_NAME":"$USER_GROUP" "$DIR/venv"
 
 # --------------------------------------------------
 # 6. Sudo permissions (reboot, shutdown, nmcli, apt updates)
@@ -150,11 +168,18 @@ sudo sed -e "s|__USER__|$USER_NAME|g" -e "s|__DIR__|$DIR|g" \
 sudo systemctl daemon-reload
 sudo systemctl enable pi-kiosk.service
 
-# Disable the GNOME keyring dialog (Chromium password prompt).
 # --------------------------------------------------
-# Remove existing keyrings so Chromium does not prompt for them.
-rm -rf "$USER_HOME/.local/share/keyrings" 2>/dev/null || true
-# Disable gnome-keyring autostart entries.
+# Keyring: disabled by default (no "unlock keyring" dialog over the kiosk).
+# Chromium always runs with --password-store=basic. The setting can be
+# switched in the web interface (Settings -> General).
+# --------------------------------------------------
+KEYRING_DIR="$USER_HOME/.local/share/keyrings"
+if [ -d "$KEYRING_DIR" ] && [ -n "$(ls -A "$KEYRING_DIR" 2>/dev/null)" ]; then
+    # Keep a backup instead of deleting stored secrets.
+    KEYRING_BACKUP="$KEYRING_DIR.piscreenportal-backup-$(date +%Y%m%d%H%M%S)"
+    mv "$KEYRING_DIR" "$KEYRING_BACKUP"
+    echo ">>> Existing keyrings moved to $KEYRING_BACKUP"
+fi
 KR_AUTOSTART_DIR="$USER_HOME/.config/autostart"
 mkdir -p "$KR_AUTOSTART_DIR"
 for f in gnome-keyring-pkcs11 gnome-keyring-secrets gnome-keyring-ssh; do
@@ -164,9 +189,10 @@ Type=Application
 Name=$f (disabled)
 Hidden=true
 X-GNOME-Autostart-enabled=false
+X-PiScreenPortal-Managed=true
 EOF
 done
-chown -R "$USER_NAME":"$USER_NAME" "$KR_AUTOSTART_DIR"
+chown -R "$USER_NAME":"$USER_GROUP" "$KR_AUTOSTART_DIR"
 
 # Create a desktop launcher that opens the web interface in Chromium.
 DESKTOP_DIR="$USER_HOME/Desktop"

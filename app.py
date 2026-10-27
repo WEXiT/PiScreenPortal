@@ -16,12 +16,14 @@ import shutil
 import socket
 import struct
 import subprocess
+import sys
 import threading
 import time
 import zlib
 from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
+from urllib.parse import quote, urlparse
 
 from flask import (Flask, Response, jsonify, redirect, render_template,
                    request, send_file, session, url_for)
@@ -33,6 +35,7 @@ except ImportError:
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = BASE_DIR / "config.json"
+CONFIG_BACKUP_FILE = BASE_DIR / "config.json.bak"
 LOG_FILE = BASE_DIR / "kiosk.log"
 DISPLAY_CACHE_FILE = BASE_DIR / "display_cache.json"
 MAINTENANCE_STATE_FILE = BASE_DIR / "maintenance_state.json"
@@ -43,7 +46,9 @@ LOG_BACKUP_COUNT = 3
 DISPLAY_CACHE_VERSION = 1
 LOG_LOCK = threading.Lock()
 DISPLAY_CACHE_LOCK = threading.Lock()
+CONFIG_LOCK = threading.RLock()
 _last_display_cache_signature = None
+_config_cache = None  # (path, mtime_ns, size, cfg)
 
 
 def default_xauthority() -> str:
@@ -88,13 +93,15 @@ def x11_display_ready(env: dict | None = None) -> bool:
 
 DEFAULT_CONFIG = {
     "port": 2411,
-    "auth": {"enabled": False, "username": "admin", "password": "admin"},
+    # Das Passwort wird nur als PBKDF2-Hash gespeichert (password_hash).
+    "auth": {"enabled": False, "username": "admin", "password_hash": ""},
     "screens": [
         {
             "name": "Links",
             "enabled": True,
             "url": "https://www.raspberrypi.com",
             "output": "",
+            "resolution": "",
             "rotation": "normal",
             "hide_cursor": True,
             "reload_interval": 0,
@@ -105,12 +112,16 @@ DEFAULT_CONFIG = {
             "enabled": True,
             "url": "https://www.google.com",
             "output": "",
+            "resolution": "",
             "rotation": "normal",
             "hide_cursor": True,
             "reload_interval": 0,
             "zoom": 1.0,
         },
     ],
+    # GNOME-Keyring-Autostart abschalten, damit nie ein "Schluesselbund
+    # entsperren"-Dialog ueber der Kiosk-Seite erscheint.
+    "disable_keyring": True,
     "chromium_flags": [
         "--noerrdialogs",
         "--disable-infobars",
@@ -233,8 +244,64 @@ def normalize_auto_reboot(value) -> dict:
     }
 
 
+SCREEN_ROTATIONS = ("normal", "left", "right", "inverted")
+URL_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
+URL_SPECIAL_PREFIXES = ("about:", "data:", "file:", "chrome:", "view-source:")
+LOCAL_HOST_RE = re.compile(
+    r"^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|"
+    r"[^/:]+\.local\b|[^/:.]+(:|/|$))", re.I)
+
+
+def _bounded_number(value, default, lo, hi, cast=float):
+    try:
+        number = cast(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return default
+    if number != number:  # NaN
+        return default
+    return max(lo, min(hi, number))
+
+
+def normalize_url(value) -> str:
+    url = str(value or "").strip()
+    if not url:
+        return "about:blank"
+    if URL_SCHEME_RE.match(url) or url.lower().startswith(URL_SPECIAL_PREFIXES):
+        return url
+    # "example.com" wuerde Chromium als Datei oder Suchbegriff deuten.
+    scheme = "http" if LOCAL_HOST_RE.match(url) else "https"
+    return f"{scheme}://{url}"
+
+
+def normalize_screen(screen, idx: int = 0) -> dict:
+    src = screen if isinstance(screen, dict) else {}
+    out = dict(src)
+    out["name"] = str(src.get("name") or f"Screen {idx + 1}").strip()[:80]
+    out["enabled"] = bool(src.get("enabled", True))
+    out["url"] = normalize_url(src.get("url"))
+    out["output"] = str(src.get("output") or "").strip()
+    resolution = str(src.get("resolution") or "").strip()
+    out["resolution"] = resolution if CACHE_MODE_RE.fullmatch(resolution) else ""
+    rotation = str(src.get("rotation") or "normal").strip()
+    out["rotation"] = rotation if rotation in SCREEN_ROTATIONS else "normal"
+    out["hide_cursor"] = bool(src.get("hide_cursor", True))
+    out["reload_interval"] = _bounded_number(
+        src.get("reload_interval"), 0, 0, 7 * 24 * 3600, cast=int)
+    out["zoom"] = round(_bounded_number(src.get("zoom"), 1.0, 0.25, 5.0), 2)
+    return out
+
+
 def normalize_config(cfg: dict) -> dict:
     _merge_defaults(cfg, DEFAULT_CONFIG)
+    screens = cfg.get("screens")
+    cfg["screens"] = [
+        normalize_screen(screen, idx)
+        for idx, screen in enumerate(screens if isinstance(screens, list) else [])
+    ]
+    cfg["port"] = _bounded_number(cfg.get("port"), 2411, 1, 65535, cast=int)
+    cfg["auto_start"] = bool(cfg.get("auto_start", True))
+    cfg["restart_on_crash"] = bool(cfg.get("restart_on_crash", True))
+    cfg["disable_keyring"] = bool(cfg.get("disable_keyring", True))
     cfg["auto_reboot"] = normalize_auto_reboot(cfg.get("auto_reboot"))
     cfg["chromium_flags"] = normalize_chromium_flags(cfg.get("chromium_flags"))
     return cfg
@@ -257,7 +324,65 @@ def normalize_chromium_flags(flags) -> list[str]:
     return out
 
 
-def validate_config_payload(cfg: dict) -> tuple[dict | None, str | None]:
+# ---------------------- Passwort-Hashing ---------------------- #
+PASSWORD_HASH_ALGO = "pbkdf2_sha256"
+PASSWORD_HASH_ITERATIONS = 200_000
+
+
+def hash_password(password: str, salt: bytes | None = None,
+                  iterations: int = PASSWORD_HASH_ITERATIONS) -> str:
+    salt = salt or secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", str(password).encode("utf-8"), salt, iterations)
+    return f"{PASSWORD_HASH_ALGO}${iterations}${salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: str, encoded: str) -> bool:
+    try:
+        algo, iterations, salt_hex, digest_hex = str(encoded).split("$", 3)
+        if algo != PASSWORD_HASH_ALGO:
+            return False
+        expected = hash_password(password, bytes.fromhex(salt_hex),
+                                 int(iterations))
+    except (ValueError, TypeError):
+        return False
+    return hmac.compare_digest(expected, f"{algo}${iterations}${salt_hex}${digest_hex}")
+
+
+def _migrate_auth(auth: dict, previous: dict | None = None) -> dict:
+    """Klartext-Passwoerter in Hashes umwandeln.
+
+    Ein leeres `password` im Payload bedeutet "unveraendert"; dann bleibt der
+    bisher gespeicherte Hash erhalten.
+    """
+    src = auth if isinstance(auth, dict) else {}
+    old = previous if isinstance(previous, dict) else {}
+    out = {
+        "enabled": bool(src.get("enabled", False)),
+        "username": str(src.get("username") or "admin").strip() or "admin",
+        "password_hash": str(src.get("password_hash")
+                             or old.get("password_hash") or ""),
+    }
+    plain = src.get("password")
+    if isinstance(plain, str) and plain:
+        out["password_hash"] = hash_password(plain)
+    return out
+
+
+def public_config(cfg: dict) -> dict:
+    """Config fuer das Frontend: niemals Passwort oder Hash ausliefern."""
+    out = _clone_default(cfg)
+    auth = out.get("auth") or {}
+    out["auth"] = {
+        "enabled": bool(auth.get("enabled")),
+        "username": auth.get("username") or "admin",
+        "password_set": bool(auth.get("password_hash") or auth.get("password")),
+    }
+    return out
+
+
+def validate_config_payload(cfg: dict, previous: dict | None = None
+                            ) -> tuple[dict | None, str | None]:
     if not isinstance(cfg, dict) or "screens" not in cfg:
         return None, "Ungültige Config"
     if not isinstance(cfg.get("screens"), list):
@@ -275,8 +400,10 @@ def validate_config_payload(cfg: dict) -> tuple[dict | None, str | None]:
                 "zugewiesen.")
         if output:
             assigned_outputs.add(output)
-    auth = (cfg.get("auth") or {})
-    if auth.get("enabled") and (not auth.get("username") or not auth.get("password")):
+    cfg["auth"] = _migrate_auth(cfg.get("auth"), (previous or {}).get("auth"))
+    auth = cfg["auth"]
+    if auth.get("enabled") and (not auth.get("username")
+                                or not auth.get("password_hash")):
         return None, ("Wenn der Zugangsschutz aktiv ist, müssen Benutzername "
                       "und Passwort gesetzt sein.")
     return normalize_config(cfg), None
@@ -289,21 +416,88 @@ def json_payload() -> tuple[dict | None, str | None]:
     return data, None
 
 
+def _read_config_file(path: Path) -> dict | None:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
 def load_config() -> dict:
-    if CONFIG_FILE.exists():
+    global _config_cache
+    with CONFIG_LOCK:
         try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-            normalize_config(cfg)
-            return cfg
-        except Exception as e:
-            log(f"Config-Fehler, lade Defaults: {e}")
-    return normalize_config(_clone_default(DEFAULT_CONFIG))
+            stat = CONFIG_FILE.stat()
+            key = (str(CONFIG_FILE), stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            key = None
+        if key and _config_cache and _config_cache[:3] == key:
+            return _clone_default(_config_cache[3])
+        cfg = None
+        if key:
+            cfg = _read_config_file(CONFIG_FILE)
+            if cfg is None:
+                cfg = _read_config_file(CONFIG_BACKUP_FILE)
+                log("Config-Fehler, lade Sicherung config.json.bak"
+                    if cfg is not None else
+                    "Config-Fehler, lade Defaults: config.json unlesbar")
+        if cfg is None:
+            cfg = _clone_default(DEFAULT_CONFIG)
+        normalize_config(cfg)
+        if key:
+            _config_cache = (*key, _clone_default(cfg))
+        return cfg
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    tmp = path.with_name(f".{path.name}.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 
 def save_config(cfg: dict) -> None:
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+    """Atomar speichern; die letzte gueltige Version bleibt als .bak erhalten.
+
+    Ein Stromausfall waehrend des Schreibens darf nie zu einer leeren
+    config.json und damit zu Default-URLs auf allen Monitoren fuehren.
+    """
+    global _config_cache
+    payload = json.dumps(cfg, indent=2, ensure_ascii=False) + "\n"
+    with CONFIG_LOCK:
+        # Zwei Speichervorgaenge innerhalb einer Zeitstempel-Aufloesung mit
+        # gleicher Dateigroesse wuerden sonst den alten Cache-Eintrag treffen.
+        _config_cache = None
+        try:
+            current = CONFIG_FILE.read_text(encoding="utf-8")
+        except OSError:
+            current = None
+        if current == payload:
+            return
+        if current is not None and _read_config_file(CONFIG_FILE) is not None:
+            try:
+                _atomic_write_text(CONFIG_BACKUP_FILE, current)
+            except OSError as e:
+                log(f"Config-Sicherung fehlgeschlagen: {e}")
+        _atomic_write_text(CONFIG_FILE, payload)
+
+
+def migrate_config_file() -> None:
+    """Einmalig beim Start: Klartext-Passwort durch Hash ersetzen."""
+    with CONFIG_LOCK:
+        raw = _read_config_file(CONFIG_FILE) if CONFIG_FILE.exists() else None
+        if raw is None:
+            return
+        auth = raw.get("auth") if isinstance(raw.get("auth"), dict) else {}
+        if "password" not in auth:
+            return
+        raw["auth"] = _migrate_auth(auth)
+        save_config(normalize_config(raw))
+        log("Passwort in config.json wird jetzt als Hash gespeichert")
 
 
 def _rotated_log_path(index: int) -> Path:
@@ -349,6 +543,27 @@ def logs_for_language(text: str, lang: str) -> str:
         return text
     replacements = [
         ("Config-Fehler, lade Defaults:", "Config error, loading defaults:"),
+        ("Config-Fehler, lade Sicherung", "Config error, loading backup"),
+        ("Config-Sicherung fehlgeschlagen:", "Config backup failed:"),
+        ("Passwort in config.json wird jetzt als Hash gespeichert",
+         "Password in config.json is now stored as a hash"),
+        ("Keyring-Autostart deaktiviert", "Keyring autostart disabled"),
+        ("Keyring-Autostart wieder aktiviert", "Keyring autostart re-enabled"),
+        ("Monitore identifizieren", "Identifying monitors"),
+        ("UxPlay wurde beendet - Kiosk wird fortgesetzt",
+         "UxPlay exited - resuming kiosk"),
+        ("Konfiguration angewendet", "Configuration applied"),
+        ("Config importiert", "Config imported"),
+        ("Cross-Site-Anfrage abgelehnt:", "Cross-site request rejected:"),
+        ("Identifizieren fehlgeschlagen", "Identify failed"),
+        ("Kiosk-Fortsetzung nach UxPlay fehlgeschlagen:",
+         "Resuming kiosk after UxPlay failed:"),
+        ("Aufloesung", "Resolution"),
+        (" abgelehnt:", " rejected:"),
+        (" gesetzt", " applied"),
+        ("Abhaengigkeiten aktualisiert", "Dependencies updated"),
+        ("Abhaengigkeiten konnten nicht aktualisiert werden:",
+         "Dependencies could not be updated:"),
         ("xrandr fehlgeschlagen:", "xrandr failed:"),
         ("Auto-Reboot Scheduler Fehler:", "Auto-reboot scheduler error:"),
         ("Maintenance-State konnte nicht gespeichert werden:",
@@ -482,10 +697,16 @@ def parse_xrandr_monitors(output: str) -> list:
             if not is_physical_output_name(name):
                 continue
             match = XRANDR_GEOMETRY_RE.search(line)
+            rotation = "normal"
             if match:
                 w, h, x, y = map(int, match.groups())
                 geometry = match.group(0)
                 active = True
+                # xrandr nennt die Drehung direkt nach der Geometrie, aber
+                # nur wenn sie nicht "normal" ist.
+                after = line[match.end():].split("(", 1)[0].split()
+                if after and after[0] in ("left", "right", "inverted"):
+                    rotation = after[0]
             else:
                 w = h = x = y = 0
                 geometry = ""
@@ -499,6 +720,7 @@ def parse_xrandr_monitors(output: str) -> list:
                 "height": h,
                 "geometry": geometry,
                 "active": active,
+                "rotation": rotation,
                 "mode": f"{w}x{h}" if active else "",
                 "rate": None,
                 "preferred_mode": "",
@@ -571,10 +793,38 @@ def detect_monitors() -> list:
     detect_monitors.last_query_ok = True
     monitors = parse_xrandr_monitors(out)
     update_display_mode_cache(monitors)
+    remember_monitors(monitors)
     return monitors
 
 
 detect_monitors.last_query_ok = True
+
+MONITOR_SNAPSHOT_TTL = 2.0
+_MONITOR_SNAPSHOT_LOCK = threading.Lock()
+_monitor_snapshot = {"at": None, "monitors": []}
+
+
+def remember_monitors(monitors: list) -> None:
+    with _MONITOR_SNAPSHOT_LOCK:
+        _monitor_snapshot["at"] = time.monotonic()
+        _monitor_snapshot["monitors"] = _clone_default(monitors)
+
+
+def current_monitors(max_age: float = MONITOR_SNAPSHOT_TTL) -> list:
+    """Kurzlebiger Snapshot fuer API-Abfragen.
+
+    Mehrere offene Browser-Tabs und der Watchdog sollen xrandr nicht parallel
+    im Sekundentakt abfragen; der Watchdog aktualisiert den Snapshot ohnehin
+    alle WATCH_INTERVAL_SECONDS.
+    """
+    with _MONITOR_SNAPSHOT_LOCK:
+        at = _monitor_snapshot["at"]
+        if at is not None and time.monotonic() - at <= max_age:
+            return _clone_default(_monitor_snapshot["monitors"])
+    monitors = detect_monitors()
+    if monitor_query_succeeded():
+        remember_monitors(monitors)
+    return monitors
 
 
 def monitor_query_succeeded() -> bool:
@@ -1171,6 +1421,80 @@ def system_info() -> dict:
     }
 
 
+# ---------------------- GNOME-Keyring ---------------------- #
+KEYRING_AUTOSTART_NAMES = ("gnome-keyring-pkcs11", "gnome-keyring-secrets",
+                           "gnome-keyring-ssh")
+KEYRING_MARKER = "X-PiScreenPortal-Managed=true"
+
+
+def _keyring_override(name: str) -> str:
+    return ("[Desktop Entry]\n"
+            "Type=Application\n"
+            f"Name={name} (disabled)\n"
+            "Hidden=true\n"
+            "X-GNOME-Autostart-enabled=false\n"
+            f"{KEYRING_MARKER}\n")
+
+
+def _is_keyring_override(path: Path) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    # Auch die aelteren Dateien aus install.sh (ohne Marker) gehoeren uns.
+    return KEYRING_MARKER in text or (
+        "Hidden=true" in text and "(disabled)" in text)
+
+
+def apply_keyring_policy(disable: bool, home: Path | None = None) -> dict:
+    """Schaltet den Autostart von gnome-keyring ab bzw. wieder ein.
+
+    Chromium nutzt ohnehin --password-store=basic. Der abgeschaltete
+    Autostart verhindert zusaetzlich, dass andere Programme beim Login einen
+    "Schluesselbund entsperren"-Dialog ueber den Kiosk legen.
+    """
+    home = home or Path.home()
+    autostart = home / ".config" / "autostart"
+    changed = []
+    try:
+        for name in KEYRING_AUTOSTART_NAMES:
+            target = autostart / f"{name}.desktop"
+            if disable:
+                content = _keyring_override(name)
+                try:
+                    current = target.read_text(encoding="utf-8")
+                except OSError:
+                    current = None
+                if current != content:
+                    autostart.mkdir(parents=True, exist_ok=True)
+                    target.write_text(content, encoding="utf-8")
+                    changed.append(str(target))
+            elif target.exists() and _is_keyring_override(target):
+                target.unlink()
+                changed.append(str(target))
+    except OSError as e:
+        return {"ok": False, "disabled": disable, "changed": changed,
+                "error": str(e)}
+    if changed:
+        log("Keyring-Autostart deaktiviert" if disable
+            else "Keyring-Autostart wieder aktiviert")
+    return {"ok": True, "disabled": disable, "changed": changed}
+
+
+def keyring_status(home: Path | None = None) -> dict:
+    home = home or Path.home()
+    autostart = home / ".config" / "autostart"
+    overrides = [
+        (autostart / f"{name}.desktop") for name in KEYRING_AUTOSTART_NAMES
+    ]
+    return {
+        "autostart_disabled": all(
+            p.exists() and _is_keyring_override(p) for p in overrides),
+        "daemon_running": bool(_pgrep("gnome-keyring-daemon")),
+        "chromium_password_store": "basic",
+    }
+
+
 # ---------------------- Wartung / Auto-Reboot ---------------------- #
 class MaintenanceManager:
     def __init__(self):
@@ -1219,8 +1543,9 @@ class MaintenanceManager:
 
     def _save_state(self, state: dict) -> None:
         try:
-            with open(MAINTENANCE_STATE_FILE, "w", encoding="utf-8") as f:
-                json.dump(state, f, indent=2, ensure_ascii=False)
+            _atomic_write_text(
+                MAINTENANCE_STATE_FILE,
+                json.dumps(state, indent=2, ensure_ascii=False) + "\n")
         except Exception as e:
             log(f"Maintenance-State konnte nicht gespeichert werden: {e}")
 
@@ -1532,6 +1857,7 @@ class MaintenanceManager:
 
             after = self._git_text(["rev-parse", "--short", "HEAD"])
             after_version = self.current_version()
+            deps = self._update_python_dependencies(before, after, outputs)
             log(f"Git-Update erfolgreich ({before} -> {after}), Reboot geplant")
             if local_changes_stashed:
                 log(f"Lokale Git-Aenderungen vor Update gesichert: {stash_ref}")
@@ -1547,6 +1873,7 @@ class MaintenanceManager:
                 "reboot_scheduled": True,
                 "local_changes_stashed": local_changes_stashed,
                 "stash_ref": stash_ref,
+                "dependencies": deps,
             }
         except subprocess.TimeoutExpired:
             return {"ok": False, "error": "Git-Update hat zu lange gedauert."}
@@ -1555,6 +1882,30 @@ class MaintenanceManager:
             return {"ok": False, "error": str(e)}
         finally:
             self._update_lock.release()
+
+    def _update_python_dependencies(self, before: str, after: str,
+                                    outputs: list[str]) -> str:
+        """Nach einem Pull neue Python-Abhaengigkeiten im venv installieren.
+
+        Ohne diesen Schritt startet die neue Version nach dem Reboot mit den
+        alten Paketen und kann an einem fehlenden Import scheitern.
+        """
+        if not before or not after or before == after:
+            return "unchanged"
+        changed = self._git_text(
+            ["diff", "--name-only", before, after, "--", "requirements.txt"])
+        if not changed.strip():
+            return "unchanged"
+        cmd = [sys.executable, "-m", "pip", "install",
+               "--disable-pip-version-check", "-q",
+               "-r", str(BASE_DIR / "requirements.txt")]
+        ok, out = self._run_git(cmd, timeout=600)
+        outputs.append(f"$ {' '.join(cmd)}\n{out}".strip())
+        if ok:
+            log("Abhaengigkeiten aktualisiert")
+            return "updated"
+        log(f"Abhaengigkeiten konnten nicht aktualisiert werden: {out}")
+        return "failed"
 
     def _system_state(self) -> dict:
         with self._system_update_state_lock:
@@ -1896,22 +2247,12 @@ exit 0
         return f"{wayfire}, {labwc}"
 
     def _disable_keyring_prompts(self, home: Path) -> str:
+        result = apply_keyring_policy(True, home)
+        if not result.get("ok"):
+            raise OSError(result.get("error") or "keyring")
         autostart = home / ".config" / "autostart"
-        autostart.mkdir(parents=True, exist_ok=True)
-        disabled = []
-        for name in ("gnome-keyring-pkcs11", "gnome-keyring-secrets",
-                     "gnome-keyring-ssh"):
-            target = autostart / f"{name}.desktop"
-            target.write_text(
-                "[Desktop Entry]\n"
-                "Type=Application\n"
-                f"Name={name} (disabled)\n"
-                "Hidden=true\n"
-                "X-GNOME-Autostart-enabled=false\n",
-                encoding="utf-8",
-            )
-            disabled.append(str(target))
-        return ", ".join(disabled)
+        return ", ".join(str(autostart / f"{name}.desktop")
+                         for name in KEYRING_AUTOSTART_NAMES)
 
     def _set_ini_values(self, path: Path, section: str, values: dict[str, str]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -2034,10 +2375,14 @@ def wifi_scan() -> list:
         sig = parts[1]
         sec = parts[2] or "offen"
         inuse = (parts[3].strip() == "*") if len(parts) > 3 else False
+        sig = str(_bounded_number(sig, 0, 0, 100, cast=int))
         # bestes Signal pro SSID behalten
-        if ssid not in nets or int(sig or 0) > int(nets[ssid]["signal"] or 0):
-            nets[ssid] = {"ssid": ssid, "signal": sig, "security": sec, "in_use": inuse}
-    return sorted(nets.values(), key=lambda n: int(n["signal"] or 0), reverse=True)
+        if ssid not in nets or int(sig) > int(nets[ssid]["signal"]):
+            nets[ssid] = {"ssid": ssid, "signal": sig, "security": sec,
+                          "in_use": inuse or nets.get(ssid, {}).get("in_use", False)}
+        elif inuse:
+            nets[ssid]["in_use"] = True
+    return sorted(nets.values(), key=lambda n: int(n["signal"]), reverse=True)
 
 
 def wifi_connect(ssid: str, password: str = "") -> tuple:
@@ -2115,11 +2460,16 @@ def wifi_disconnect() -> tuple:
     if not wifi_available():
         return False, "nmcli nicht verfügbar"
     try:
-        out = subprocess.run(["nmcli", "radio", "wifi", "off"],
+        # Der Dienst laeuft ausserhalb der Desktop-Sitzung; ohne sudo lehnt
+        # polkit das Abschalten des Funkmoduls je nach Image ab.
+        out = subprocess.run(["sudo", "-n", "nmcli", "radio", "wifi", "off"],
                              capture_output=True, timeout=10)
-        subprocess.run(["nmcli", "radio", "wifi", "on"],
+        subprocess.run(["sudo", "-n", "nmcli", "radio", "wifi", "on"],
                        capture_output=True, timeout=10)
-        return out.returncode == 0, "WLAN aus- und wieder eingeschaltet"
+        if out.returncode != 0:
+            return False, (out.stderr + out.stdout).decode(
+                "utf-8", "ignore").strip() or f"exit {out.returncode}"
+        return True, "WLAN aus- und wieder eingeschaltet"
     except Exception as e:
         return False, str(e)
 
@@ -2130,6 +2480,7 @@ class PresentationManager:
     def __init__(self):
         self.proc = None
         self.started_at = 0
+        self._stopping = False
 
     def _env(self):
         return display_env()
@@ -2140,7 +2491,24 @@ class PresentationManager:
     def is_running(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
 
-    def start(self, cfg: dict):
+    def _wait_for_exit(self, proc, on_exit) -> None:
+        try:
+            proc.wait()
+        except Exception:
+            return
+        if self._stopping or self.proc is not proc:
+            return
+        # UxPlay ist abgestuerzt oder wurde am Pi beendet: Ohne diesen Pfad
+        # bliebe der pausierte Kiosk dauerhaft schwarz.
+        log("UxPlay wurde beendet - Kiosk wird fortgesetzt")
+        self.proc = None
+        self.started_at = 0
+        try:
+            on_exit()
+        except Exception as e:
+            log(f"Kiosk-Fortsetzung nach UxPlay fehlgeschlagen: {e}")
+
+    def start(self, cfg: dict, on_exit=None):
         if not self.available():
             return False, "uxplay ist nicht installiert. Bitte: sudo apt install uxplay"
         if self.is_running():
@@ -2162,16 +2530,22 @@ class PresentationManager:
 
         log(f"Starte Präsentation (UxPlay): {' '.join(cmd)}")
         try:
+            self._stopping = False
             self.proc = subprocess.Popen(cmd, env=self._env(),
                                          stdout=subprocess.DEVNULL,
                                          stderr=subprocess.DEVNULL)
             self.started_at = int(time.time())
+            if on_exit is not None:
+                threading.Thread(target=self._wait_for_exit,
+                                 args=(self.proc, on_exit),
+                                 daemon=True).start()
             return True, "Präsentation gestartet"
         except Exception as e:
             log(f"UxPlay Fehler: {e}")
             return False, str(e)
 
     def stop(self):
+        self._stopping = True
         if self.proc and self.proc.poll() is None:
             try:
                 self.proc.terminate()
@@ -2181,7 +2555,10 @@ class PresentationManager:
                     self.proc.kill()
             except Exception as e:
                 log(f"UxPlay Stop-Fehler: {e}")
-        subprocess.call(["pkill", "-f", "uxplay"], env=self._env())
+        # Nur den exakten Prozessnamen treffen, nicht z.B. ein "grep uxplay".
+        if shutil.which("pkill"):
+            subprocess.call(["pkill", "-x", "uxplay"], env=self._env(),
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.proc = None
         self.started_at = 0
 
@@ -2206,6 +2583,8 @@ class KioskManager:
         self.process_outputs = {}  # idx -> xrandr output name
         self.window_health = {}  # idx -> last known window visibility
         self.reload_threads = {}  # idx -> (thread, stop_event)
+        self.launch_signatures = {}  # idx -> Startparameter des Chromium
+        self.rotated_outputs = set()  # von uns gedrehte xrandr-Ausgaenge
         self.unclutter_proc = None
         self.lock = threading.Lock()
         self.apply_lock = threading.RLock()
@@ -2261,13 +2640,41 @@ class KioskManager:
         return display_env()
 
     def _apply_rotation(self, output: str, rotation: str) -> None:
-        if not output or rotation == "normal":
+        # Auch "normal" muss gesetzt werden: sonst bleibt ein frueher
+        # gedrehter Monitor nach dem Zuruecksetzen bis zum Reboot gedreht.
+        if not output or rotation not in SCREEN_ROTATIONS:
             return
         try:
             subprocess.run(["xrandr", "--output", output, "--rotate", rotation],
                            env=self._env(), check=False, timeout=5)
         except Exception as e:
             log(f"Rotate-Fehler {output}: {e}")
+
+    def _apply_resolution(self, output: str, mode: str) -> None:
+        if not output or not CACHE_MODE_RE.fullmatch(mode or ""):
+            return
+        try:
+            r = subprocess.run(["xrandr", "--output", output, "--mode", mode],
+                               env=self._env(), capture_output=True, timeout=8)
+            if r.returncode != 0:
+                log(f"Aufloesung {mode} auf {output} abgelehnt: "
+                    + (r.stderr + r.stdout).decode("utf-8", "ignore").strip())
+            else:
+                log(f"Aufloesung {mode} auf {output} gesetzt")
+        except Exception as e:
+            log(f"Aufloesung {mode} auf {output} fehlgeschlagen: {e}")
+
+    @staticmethod
+    def _launch_signature(screen: dict, flags: list) -> tuple:
+        """Alles, was eine laufende Chromium-Instanz nicht live uebernimmt."""
+        return (
+            str(screen.get("url") or ""),
+            _bounded_number(screen.get("zoom"), 1.0, 0.25, 5.0),
+            str(screen.get("rotation") or "normal"),
+            str(screen.get("resolution") or ""),
+            int(screen.get("reload_interval", 0) or 0),
+            tuple(normalize_chromium_flags(flags)),
+        )
 
     def _active_monitors(self, monitors: list) -> list:
         return [m for m in monitors
@@ -2344,13 +2751,21 @@ class KioskManager:
         if not output_names:
             return monitors
         rotations = {}
+        resolutions = {}
+        monitors_by_name = {m["name"]: m for m in monitors}
         for screen in (cfg or {}).get("screens", []):
+            if not screen.get("enabled", True):
+                continue
             output = str(screen.get("output") or "").strip()
             rotation = str(screen.get("rotation") or "normal")
-            if output in output_names and rotation in (
-                    "normal", "left", "right", "inverted"):
+            if output in output_names and rotation in SCREEN_ROTATIONS:
                 rotations[output] = rotation
-        monitors_by_name = {m["name"]: m for m in monitors}
+            resolution = str(screen.get("resolution") or "").strip()
+            if output in output_names and resolution and resolution in {
+                    str(mode.get("name"))
+                    for mode in monitors_by_name.get(output, {}).get(
+                        "available_modes", [])}:
+                resolutions[output] = resolution
 
         def build_command(use_cache: bool) -> tuple[list, list[str]]:
             command = ["xrandr"]
@@ -2362,7 +2777,11 @@ class KioskManager:
                     cached_display_mode(monitors_by_name.get(output, {}))
                     if use_cache else None
                 )
-                if cached:
+                if output in resolutions:
+                    # Fest eingestellte Aufloesung (z.B. 1080p auf einem
+                    # 4K-TV) hat Vorrang vor Cache und --auto.
+                    command.extend(["--mode", resolutions[output]])
+                elif cached:
                     command.extend(["--mode", cached["mode"]])
                     if cached.get("rate") is not None:
                         command.extend(["--rate", f"{cached['rate']:g}"])
@@ -2588,11 +3007,21 @@ class KioskManager:
         def loop():
             while not stop.wait(interval):
                 try:
-                    subprocess.call(
-                        ["xdotool", "search", "--pid", str(pid), "key", "F5"],
-                        env=self._env(), stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL, timeout=5)
-                    log(f"Auto-Reload Bildschirm {idx}")
+                    env = self._env()
+                    # Chromium kann den Start-Prozess beenden und das Profil
+                    # an einen anderen Prozess uebergeben. Das Profil ist
+                    # deshalb verlaesslicher als die urspruengliche PID.
+                    win_ids = self._screen_window_ids(idx, env)
+                    if not win_ids:
+                        r = subprocess.run(
+                            ["xdotool", "search", "--pid", str(pid)],
+                            env=env, capture_output=True, timeout=5)
+                        win_ids = r.stdout.decode("utf-8", "ignore").split()
+                    sent = sum(1 for wid in win_ids if _send_reload_key(wid, env))
+                    if sent:
+                        log(f"Auto-Reload Bildschirm {idx}")
+                    else:
+                        log(f"Reload-Fehler {idx}: kein Fenster gefunden")
                 except Exception as e:
                     log(f"Reload-Fehler {idx}: {e}")
 
@@ -2694,6 +3123,27 @@ class KioskManager:
                 self._set_window_health(idx, False, monitor.get("name"))
                 return False
 
+        commands_ok = self._move_windows(win_ids, monitor, env, idx)
+        geometries = [
+            geometry for geometry in
+            (self._window_geometry(wid, env) for wid in win_ids)
+            if geometry is not None
+        ]
+        visible = (
+            any(self._window_covers_monitor(geometry, monitor)
+                for geometry in geometries)
+            if geometries else commands_ok
+        )
+        self._set_window_health(idx, visible, monitor.get("name"))
+        if visible:
+            log(f"Fenster fuer Bildschirm {idx} auf {monitor['name']} positioniert")
+        else:
+            log(f"Fenster fuer Bildschirm {idx} konnte nicht sichtbar auf "
+                f"{monitor['name']} positioniert werden")
+        return visible
+
+    def _move_windows(self, win_ids: list[str], monitor: dict, env: dict,
+                      idx: int | None = None) -> bool:
         commands_ok = True
         for wid in win_ids:
             try:
@@ -2732,23 +3182,7 @@ class KioskManager:
             except Exception as e:
                 commands_ok = False
                 log(f"Fenster-Positionierung Bildschirm {idx} Fehler: {e}")
-        geometries = [
-            geometry for geometry in
-            (self._window_geometry(wid, env) for wid in win_ids)
-            if geometry is not None
-        ]
-        visible = (
-            any(self._window_covers_monitor(geometry, monitor)
-                for geometry in geometries)
-            if geometries else commands_ok
-        )
-        self._set_window_health(idx, visible, monitor.get("name"))
-        if visible:
-            log(f"Fenster fuer Bildschirm {idx} auf {monitor['name']} positioniert")
-        else:
-            log(f"Fenster fuer Bildschirm {idx} konnte nicht sichtbar auf "
-                f"{monitor['name']} positioniert werden")
-        return visible
+        return commands_ok
 
     def _verify_screen_window(self, idx: int, monitor: dict,
                               repair: bool = True) -> bool | None:
@@ -2792,13 +3226,40 @@ class KioskManager:
             return
 
         rotation = screen.get("rotation", "normal")
-        self._apply_rotation(monitor["name"], rotation)
-        if rotation != "normal":
-            # Rotation tauscht bei left/right Breite und Hoehe. Chromium und
-            # die nachgelagerte Sichtbarkeitspruefung brauchen deshalb die
+        if rotation not in SCREEN_ROTATIONS:
+            rotation = "normal"
+        resolution = str(screen.get("resolution") or "").strip()
+        geometry_changed = False
+        advertised = {
+            str(mode.get("name")) for mode in monitor.get("available_modes", [])
+            if isinstance(mode, dict)
+        }
+        if (resolution and resolution != monitor.get("mode")
+                and resolution in advertised):
+            self._apply_resolution(monitor["name"], resolution)
+            geometry_changed = True
+        # Zurueck auf "normal" nur, wenn PiScreenPortal selbst gedreht hat.
+        # Eine im Betriebssystem eingestellte Drehung bleibt unangetastet.
+        if (rotation != monitor.get("rotation", "normal")
+                and (rotation != "normal"
+                     or monitor["name"] in self.rotated_outputs)):
+            self._apply_rotation(monitor["name"], rotation)
+            geometry_changed = True
+        if rotation == "normal":
+            self.rotated_outputs.discard(monitor["name"])
+        else:
+            self.rotated_outputs.add(monitor["name"])
+        if geometry_changed:
+            # Rotation und Aufloesung aendern Breite/Hoehe. Chromium und die
+            # nachgelagerte Sichtbarkeitspruefung brauchen deshalb die
             # Geometrie nach dem xrandr-Aufruf, nicht den alten Snapshot.
             refreshed = detect_monitors()
             if monitor_query_succeeded():
+                if self._layout_needs_repair(refreshed):
+                    # Ein groesser gewordener Monitor ueberlappt sonst seinen
+                    # rechten Nachbarn.
+                    refreshed = self._prepare_monitor_layout(
+                        refreshed, load_config())
                 rotated = next(
                     (candidate for candidate in self._active_monitors(refreshed)
                      if candidate["name"] == monitor["name"]),
@@ -2827,6 +3288,8 @@ class KioskManager:
             with self.lock:
                 self.processes[idx] = p
                 self.process_outputs[idx] = monitor["name"]
+                self.launch_signatures[idx] = self._launch_signature(
+                    screen, flags)
             self._start_reload_thread(idx, int(screen.get("reload_interval", 0) or 0), p.pid)
             self._position_screen_window(idx, p.pid, monitor)
         except FileNotFoundError:
@@ -2843,6 +3306,7 @@ class KioskManager:
             p = self.processes.pop(idx, None)
             self.process_outputs.pop(idx, None)
             self.window_health.pop(idx, None)
+            self.launch_signatures.pop(idx, None)
         if p and p.poll() is None:
             try:
                 p.terminate()
@@ -2884,22 +3348,35 @@ class KioskManager:
         assignments = {
             idx: None for idx in range(len(cfg["screens"]))
         }
-        config_changed = False
+        new_bindings = {}
         reserved_outputs = set()
 
         def assign(idx: int, screen: dict) -> None:
-            nonlocal config_changed
             monitor = self._pick_output(
                 screen, monitors, idx,
                 allow_new_auto=allow_new_auto,
                 reserved_outputs=reserved_outputs,
             )
+            temporary = False
+            if (monitor is None and not allow_new_auto
+                    and not str(screen.get("output") or "").strip()):
+                # Weniger Monitore als automatische Seiten (z.B. Erststart
+                # mit nur einem Display): freie Monitore trotzdem nutzen,
+                # aber nicht dauerhaft binden. Sonst bliebe der Bildschirm
+                # schwarz, bis ein zweiter Monitor eingesteckt wird.
+                monitor = next(
+                    (m for m in self._active_monitors(monitors)
+                     if m["name"] not in reserved_outputs),
+                    None,
+                )
+                temporary = monitor is not None
             assignments[idx] = monitor
             if monitor:
                 reserved_outputs.add(monitor["name"])
-            if monitor and not str(screen.get("output") or "").strip():
+            if (monitor and not temporary
+                    and not str(screen.get("output") or "").strip()):
                 screen["output"] = monitor["name"]
-                config_changed = True
+                new_bindings[idx] = monitor["name"]
                 log(f"Bildschirm {idx} ({screen.get('name')}) an "
                     f"{monitor['name']} gebunden")
 
@@ -2914,9 +3391,39 @@ class KioskManager:
             if (screen.get("enabled", True)
                     and not str(screen.get("output") or "").strip()):
                 assign(idx, screen)
-        if config_changed:
-            save_config(cfg)
+        if new_bindings:
+            self._persist_bindings(cfg, new_bindings)
         return assignments
+
+    @staticmethod
+    def _persist_bindings(cfg: dict, bindings: dict) -> None:
+        """Neue automatische Zuordnungen speichern, ohne fremde Aenderungen
+        zu ueberschreiben.
+
+        Der Watchdog arbeitet mit einer Config-Kopie vom Tick-Beginn. Hat der
+        Nutzer zwischenzeitlich gespeichert, wird nur das `output`-Feld der
+        unveraendert gebliebenen Bildschirme in der aktuellen Datei ergaenzt.
+        """
+        with CONFIG_LOCK:
+            fresh = _read_config_file(CONFIG_FILE)
+            if fresh is None or not isinstance(fresh.get("screens"), list):
+                save_config(cfg)
+                return
+            changed = False
+            for idx, output in bindings.items():
+                if idx >= len(fresh["screens"]):
+                    continue
+                current = fresh["screens"][idx]
+                original = cfg["screens"][idx]
+                if (not isinstance(current, dict)
+                        or str(current.get("output") or "").strip()
+                        or normalize_url(current.get("url"))
+                        != normalize_url(original.get("url"))):
+                    continue
+                current["output"] = output
+                changed = True
+            if changed:
+                save_config(fresh)
 
     def _reconcile_screens(self, cfg: dict, monitors: list,
                            restart_existing: bool = False) -> None:
@@ -2949,6 +3456,7 @@ class KioskManager:
             with self.lock:
                 process = self.processes.get(idx)
                 current_output = self.process_outputs.get(idx)
+                signature = self.launch_signatures.get(idx)
             running = self._screen_process_running(idx, process)
             if monitor is None:
                 if restart_existing or running:
@@ -2956,7 +3464,11 @@ class KioskManager:
                 else:
                     self._set_window_health(idx, False)
                 continue
-            if (restart_existing or not running
+            settings_changed = (
+                signature is not None
+                and signature != self._launch_signature(screen, flags)
+            )
+            if (restart_existing or not running or settings_changed
                     or current_output != monitor["name"]):
                 self.start_screen(idx, screen, monitor, flags)
                 continue
@@ -2966,6 +3478,16 @@ class KioskManager:
             self._verify_screen_window(idx, monitor, repair=True)
 
     def start_all(self, cfg: dict | None = None):
+        self._start(cfg, restart_existing=True)
+
+    def apply_config(self, cfg: dict | None = None):
+        """Gespeicherte Config uebernehmen, ohne unveraenderte Seiten neu zu
+        laden. Bei zwei Monitoren bleibt so die Seite auf dem nicht
+        bearbeiteten Display ungestoert."""
+        self._start(cfg, restart_existing=False)
+        log("Konfiguration angewendet")
+
+    def _start(self, cfg: dict | None, restart_existing: bool):
         with self.apply_lock:
             cfg = cfg or load_config()
             with self.lock:
@@ -2977,7 +3499,8 @@ class KioskManager:
                 self._pending_monitor_layout = None
                 self._pending_monitor_layout_since = 0.0
             log(f"Erkannte Monitore: {self._layout_description(monitors)}")
-            self._reconcile_screens(cfg, monitors, restart_existing=True)
+            self._reconcile_screens(cfg, monitors,
+                                    restart_existing=restart_existing)
             self._ensure_watcher()
 
     def restart_all(self):
@@ -2985,6 +3508,136 @@ class KioskManager:
             self.stop_all(keep_desired=True)
             time.sleep(1)
             self.start_all()
+
+    def restart_screen(self, idx: int) -> tuple[bool, str]:
+        with self.apply_lock:
+            cfg = load_config()
+            if not 0 <= idx < len(cfg["screens"]):
+                return False, "Unbekannter Bildschirm"
+            screen = cfg["screens"][idx]
+            if not screen.get("enabled", True):
+                self.stop_screen(idx)
+                return True, ""
+            monitors = detect_monitors()
+            assignments = self._assign_screens(cfg, monitors)
+            monitor = assignments.get(idx)
+            if monitor is None:
+                return False, "Kein Monitor für diesen Bildschirm gefunden"
+            with self.lock:
+                self._desired_running = True
+            self.start_screen(idx, screen, monitor, cfg.get("chromium_flags", []))
+            self._ensure_watcher()
+            return True, monitor["name"]
+
+    @property
+    def desired_running(self) -> bool:
+        with self.lock:
+            return self._desired_running
+
+    # ---------- Monitore identifizieren ----------
+    IDENTIFY_MARKER = "piscreenportal-identify-"
+
+    def _identify_profile_dir(self, idx: int) -> str:
+        d = Path.home() / ".cache" / f"{self.IDENTIFY_MARKER}{idx}"
+        d.mkdir(parents=True, exist_ok=True)
+        return str(d)
+
+    @staticmethod
+    def _identify_page(number: int, output: str, screen_name: str,
+                       width: int, height: int) -> str:
+        def esc(value) -> str:
+            return (str(value).replace("&", "&amp;").replace("<", "&lt;")
+                    .replace(">", "&gt;"))
+        html = (
+            "<!doctype html><html><head><meta charset='utf-8'><style>"
+            "html,body{margin:0;height:100%;background:#0b1220;color:#fff;"
+            "font-family:sans-serif;cursor:none;overflow:hidden}"
+            "body{display:flex;flex-direction:column;align-items:center;"
+            "justify-content:center;gap:2vh;border:1.5vh solid #3b82f6;"
+            "box-sizing:border-box}"
+            ".n{font-size:38vh;font-weight:800;line-height:1;color:#60a5fa}"
+            ".o{font-size:7vh;font-weight:700}"
+            ".s{font-size:4.5vh;opacity:.8}</style></head><body>"
+            f"<div class='n'>{number}</div>"
+            f"<div class='o'>{esc(output)}</div>"
+            f"<div class='s'>{esc(screen_name)} &middot; {width}&times;{height}</div>"
+            "</body></html>"
+        )
+        return "data:text/html;charset=utf-8," + quote(html)
+
+    def identify_monitors(self, seconds: float = 10.0) -> list[dict]:
+        """Zeigt auf jedem aktiven Monitor kurz Nummer und Ausgangsname.
+
+        Damit laesst sich bei zwei gleichen Displays ohne Raten sehen,
+        welches Kabel an HDMI-1 und welches an HDMI-2 steckt.
+        """
+        monitors = self._active_monitors(detect_monitors())
+        if not monitors:
+            return []
+        cfg = load_config()
+        names_by_output = {}
+        for screen in cfg.get("screens", []):
+            output = str(screen.get("output") or "").strip()
+            if output and screen.get("enabled", True):
+                names_by_output.setdefault(output, screen.get("name") or "")
+        self._terminate_processes_matching(self.IDENTIFY_MARKER)
+        shown = []
+        log("Monitore identifizieren: "
+            + ", ".join(m["name"] for m in monitors))
+        for number, monitor in enumerate(monitors, start=1):
+            screen_name = names_by_output.get(monitor["name"], "-")
+            cmd = [
+                self._chromium_bin(),
+                "--kiosk",
+                "--new-window",
+                f"--user-data-dir={self._identify_profile_dir(number)}",
+                f"--window-position={monitor['x']},{monitor['y']}",
+                f"--window-size={monitor['width']},{monitor['height']}",
+                "--app=" + self._identify_page(
+                    number, monitor["name"], screen_name,
+                    monitor["width"], monitor["height"]),
+                *REQUIRED_FLAGS,
+            ]
+            try:
+                p = subprocess.Popen(cmd, env=self._env(),
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+            except Exception as e:
+                log(f"Identifizieren fehlgeschlagen ({monitor['name']}): {e}")
+                continue
+            shown.append({"number": number, "output": monitor["name"],
+                          "screen": screen_name, "pid": p.pid,
+                          "monitor": monitor})
+
+        def place_and_close():
+            env = self._env()
+            for item in shown:
+                win_ids = self._wait_for_pid_windows(item["pid"], env, 8.0)
+                if win_ids:
+                    self._move_windows(win_ids, item["monitor"], env)
+            time.sleep(max(1.0, seconds))
+            self._terminate_processes_matching(self.IDENTIFY_MARKER)
+
+        threading.Thread(target=place_and_close, daemon=True).start()
+        return [{k: v for k, v in item.items() if k != "monitor"}
+                for item in shown]
+
+    def _wait_for_pid_windows(self, pid: int, env: dict,
+                              timeout: float) -> list[str]:
+        if not shutil.which("xdotool"):
+            return []
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                r = subprocess.run(["xdotool", "search", "--pid", str(pid)],
+                                   env=env, capture_output=True, timeout=2)
+                ids = r.stdout.decode("utf-8", "ignore").split()
+                if r.returncode == 0 and ids:
+                    return ids
+            except Exception:
+                pass
+            time.sleep(0.3)
+        return []
 
     def status(self) -> dict:
         out = {}
@@ -3168,11 +3821,16 @@ def _credentials_match(username: str, password: str) -> bool:
     """
     cfg = _auth_cfg()
     exp_u = cfg.get("username") or ""
-    exp_p = cfg.get("password") or ""
-    if not exp_u or not exp_p:
+    exp_hash = cfg.get("password_hash") or ""
+    exp_plain = cfg.get("password") or ""   # Altformat vor der Migration
+    if not exp_u or not (exp_hash or exp_plain) or not password:
         return False
-    return (hmac.compare_digest(exp_u.encode(), (username or "").encode())
-            and hmac.compare_digest(exp_p.encode(), (password or "").encode()))
+    user_ok = hmac.compare_digest(exp_u.encode(), (username or "").encode())
+    if exp_hash:
+        pw_ok = verify_password(password, exp_hash)
+    else:
+        pw_ok = hmac.compare_digest(exp_plain.encode(), password.encode())
+    return user_ok and pw_ok
 
 
 def is_logged_in() -> bool:
@@ -3187,6 +3845,28 @@ def _wants_json() -> bool:
         return True
     accept = request.headers.get("Accept", "")
     return "application/json" in accept and "text/html" not in accept
+
+
+def _same_origin_request() -> bool:
+    """CSRF-Schutz ohne Token: Browser schicken bei Cross-Site-POSTs immer
+    einen Origin- bzw. Sec-Fetch-Site-Header. Ohne diesen Check koennte jede
+    Webseite, die ein Nutzer im LAN oeffnet, den Pi neu starten oder die
+    Kiosk-URL aendern, solange der Zugangsschutz aus ist."""
+    origin = request.headers.get("Origin")
+    if origin:
+        return origin != "null" and urlparse(origin).netloc == request.host
+    return request.headers.get("Sec-Fetch-Site", "same-origin") in (
+        "same-origin", "none")
+
+
+@app.before_request
+def _reject_cross_site_writes():
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return None
+    if _same_origin_request():
+        return None
+    log(f"Cross-Site-Anfrage abgelehnt: {request.method} {request.path}")
+    return jsonify({"ok": False, "error": "cross_site_request"}), 403
 
 
 def requires_auth(f):
@@ -3240,11 +3920,13 @@ def login():
         log(f"Login fehlgeschlagen: {username or '(leer)'} von {request.remote_addr}")
         error = "invalid"
 
+    # Den konfigurierten Benutzernamen nicht vorbefuellen: die Login-Seite
+    # ist ohne Anmeldung erreichbar und wuerde ihn sonst preisgeben.
     return render_template(
         "login.html",
         error=error,
-        next=request.args.get("next", ""),
-        username=_auth_cfg().get("username") or "",
+        next=request.form.get("next") or request.args.get("next", ""),
+        username=(request.form.get("username") or "") if error else "",
     )
 
 
@@ -3268,18 +3950,29 @@ def api_auth_status():
     })
 
 
+def _store_config(new_cfg: dict) -> tuple[dict | None, str | None]:
+    with CONFIG_LOCK:
+        previous = load_config()
+        new_cfg, error = validate_config_payload(new_cfg, previous)
+        if error:
+            return None, error
+        save_config(new_cfg)
+    if new_cfg.get("disable_keyring") != previous.get("disable_keyring"):
+        apply_keyring_policy(new_cfg.get("disable_keyring", True))
+    return new_cfg, None
+
+
 @app.route("/api/config", methods=["GET", "POST"])
 @requires_auth
 def api_config():
     if request.method == "GET":
-        return jsonify(load_config())
+        return jsonify(public_config(load_config()))
     new_cfg, error = json_payload()
     if error:
         return jsonify({"ok": False, "error": error}), 400
-    new_cfg, error = validate_config_payload(new_cfg)
+    _, error = _store_config(new_cfg)
     if error:
         return jsonify({"ok": False, "error": error}), 400
-    save_config(new_cfg)
     log("Config gespeichert")
     return jsonify({"ok": True})
 
@@ -3287,6 +3980,7 @@ def api_config():
 @app.route("/api/config/export")
 @requires_auth
 def api_config_export():
+    # Enthaelt nur den Passwort-Hash, damit ein Import den Zugang erhaelt.
     payload = json.dumps(load_config(), indent=2, ensure_ascii=False)
     buf = io.BytesIO(payload.encode("utf-8"))
     return send_file(buf, as_attachment=True, mimetype="application/json",
@@ -3300,10 +3994,10 @@ def api_config_import():
         data, error = json_payload()
         if error:
             raise ValueError(error)
-        data, error = validate_config_payload(data)
+        _, error = _store_config(data)
         if error:
             raise ValueError(error)
-        save_config(data)
+        log("Config importiert")
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 400
@@ -3312,7 +4006,35 @@ def api_config_import():
 @app.route("/api/monitors")
 @requires_auth
 def api_monitors():
-    return jsonify(detect_monitors())
+    if request.args.get("refresh"):
+        return jsonify(detect_monitors())
+    return jsonify(current_monitors())
+
+
+@app.route("/api/monitors/identify", methods=["POST"])
+@requires_auth
+def api_monitors_identify():
+    shown = manager.identify_monitors()
+    if not shown:
+        return jsonify({"ok": False,
+                        "error": "Kein aktiver Monitor erkannt."}), 500
+    return jsonify({"ok": True, "monitors": shown})
+
+
+@app.route("/api/screen/<int:idx>/restart", methods=["POST"])
+@requires_auth
+def api_screen_restart(idx):
+    ok, msg = manager.restart_screen(idx)
+    if not ok:
+        return jsonify({"ok": False, "error": msg}), 400
+    return jsonify({"ok": True, "output": msg})
+
+
+@app.route("/api/keyring")
+@requires_auth
+def api_keyring():
+    return jsonify({"enabled_in_config": load_config().get("disable_keyring", True),
+                    **keyring_status()})
 
 
 @app.route("/api/services")
@@ -3392,8 +4114,13 @@ def api_maintenance_optimize_boot():
 def api_status():
     return jsonify({
         "processes": manager.status(),
-        "monitors": detect_monitors(),
+        "monitors": current_monitors(),
         "system": system_info(),
+        "kiosk": {
+            "desired_running": manager.desired_running,
+            "presentation_running": presentation.is_running(),
+        },
+        "version": maintenance.current_version(),
     })
 
 
@@ -3538,6 +4265,27 @@ def _pid_has_kiosk_profile(pid: int | None) -> bool:
     return _pid_has_profile_marker(pid, "chromium-profile-")
 
 
+def _send_reload_key(window_id: str, env: dict) -> bool:
+    """F5 an ein Kiosk-Fenster senden.
+
+    Chromium verwirft synthetische XSendEvent-Tasten (`key --window`) haeufig.
+    Zuverlaessiger ist es, das Fenster zu aktivieren und F5 ueber XTEST zu
+    schicken; `--window` bleibt als Fallback fuer Fenstermanager ohne EWMH.
+    """
+    for cmd in (
+        ["xdotool", "windowactivate", "--sync", window_id,
+         "key", "--clearmodifiers", "F5"],
+        ["xdotool", "key", "--window", window_id, "F5"],
+    ):
+        try:
+            r = subprocess.run(cmd, env=env, capture_output=True, timeout=4)
+            if r.returncode == 0:
+                return True
+        except Exception as e:
+            log(f"xdotool key {window_id} Fehler: {e}")
+    return False
+
+
 def _reload_chromium_windows() -> bool:
     """F5 an jedes Chromium-Fenster senden. Gibt True zurück, wenn mindestens
     ein Fenster angetriggert wurde."""
@@ -3557,15 +4305,8 @@ def _reload_chromium_windows() -> bool:
 
     sent = 0
     for wid in win_ids:
-        try:
-            r = subprocess.run(
-                ["xdotool", "key", "--window", wid, "F5"],
-                env=env, capture_output=True, timeout=5,
-            )
-            if r.returncode == 0:
-                sent += 1
-        except Exception as e:
-            log(f"xdotool key {wid} Fehler: {e}")
+        if _send_reload_key(wid, env):
+            sent += 1
     skipped = len(all_win_ids) - len(win_ids)
     suffix = f", {skipped} andere Chromium-Fenster ignoriert" if skipped else ""
     log(f"Reload: F5 an {sent}/{len(win_ids)} Kiosk-Fenster gesendet{suffix}")
@@ -3595,6 +4336,8 @@ def api_action(name):
     try:
         if name == "start":
             manager.start_all()
+        elif name == "apply":
+            manager.apply_config()
         elif name == "stop":
             manager.stop_all()
         elif name == "restart":
@@ -3779,10 +4522,23 @@ def api_presentation_status():
 def api_presentation_start():
     cfg = load_config()
     pcfg = cfg.get("presentation", {})
-    if pcfg.get("stop_kiosk_while_active", True):
+    pause_kiosk = (pcfg.get("stop_kiosk_while_active", True)
+                   and not presentation.is_running())
+    if pause_kiosk and not presentation.available():
+        # Nicht erst den Kiosk stoppen, wenn UxPlay gar nicht starten kann.
+        ok, msg = presentation.start(cfg)
+        return jsonify({"ok": ok, "message": msg,
+                        "status": presentation.status()})
+    if pause_kiosk:
         manager.stop_all()
         time.sleep(0.5)
-    ok, msg = presentation.start(cfg)
+
+    def resume_kiosk():
+        manager.start_all(load_config())
+
+    ok, msg = presentation.start(cfg, on_exit=resume_kiosk if pause_kiosk else None)
+    if not ok and pause_kiosk:
+        threading.Thread(target=resume_kiosk, daemon=True).start()
     return jsonify({"ok": ok, "message": msg, "status": presentation.status()})
 
 
@@ -3816,6 +4572,8 @@ def api_logs():
 # ---------------------- Boot ---------------------- #
 def boot_start():
     cfg = load_config()
+    if cfg.get("disable_keyring", True):
+        apply_keyring_policy(True)
     if cfg.get("auto_start"):
         # Auch ohne angeschlossenen Monitor den gewuenschten Zustand und den
         # Watchdog aktivieren. Ein spaeter eingestecktes Display erscheint so
@@ -3824,6 +4582,7 @@ def boot_start():
 
 
 if __name__ == "__main__":
+    migrate_config_file()
     cfg = load_config()
     if not CONFIG_FILE.exists():
         save_config(cfg)

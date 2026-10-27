@@ -1,5 +1,8 @@
 let cfg = null;
 let monitors = [];
+let lastProcs = {};
+let lastKiosk = {};
+let dirty = false;
 
 // Auto-redirect to /login when the session expires mid-session.
 // Wraps the global fetch so any 401 on /api/* paths sends the user to /login.
@@ -17,6 +20,48 @@ let monitors = [];
   };
 })();
 
+async function postJson(url, body) {
+  const init = {method: "POST", headers: {"Content-Type": "application/json"}};
+  if (body !== undefined) init.body = JSON.stringify(body);
+  const r = await fetch(url, init);
+  let data = {};
+  try { data = await r.json(); } catch (e) {}
+  if (!r.ok && data.ok === undefined) data.ok = false;
+  return data;
+}
+
+// ---------- Toasts ----------
+function toast(text, type = "info", ms = 4500) {
+  const host = document.getElementById("toasts");
+  if (!host || !text) return;
+  const el = document.createElement("div");
+  el.className = "toast " + type;
+  el.textContent = text;
+  host.appendChild(el);
+  setTimeout(() => {
+    el.classList.add("leaving");
+    setTimeout(() => el.remove(), 250);
+  }, ms);
+}
+
+function setBusy(btn, busy) {
+  if (!btn) return;
+  btn.disabled = busy;
+  btn.classList.toggle("busy", busy);
+}
+
+// ---------- Unsaved changes ----------
+function setDirty(value) {
+  dirty = value;
+  document.getElementById("dirty-hint").hidden = !value;
+}
+
+window.addEventListener("beforeunload", e => {
+  if (!dirty) return;
+  e.preventDefault();
+  e.returnValue = "";
+});
+
 // ---------- Tabs ----------
 function activateTab(name) {
   const tab = document.querySelector(`.tab[data-tab="${name}"]`);
@@ -27,11 +72,19 @@ function activateTab(name) {
   document.querySelectorAll(".tab-content").forEach(x => x.classList.remove("active"));
   tab.classList.add("active");
   panel.classList.add("active");
+  try { sessionStorage.setItem("pisp_tab", name); } catch (e) {}
 
   if (name === "wifi") loadWifi();
   if (name === "presentation") loadPresentation();
   if (name === "diagnostics") loadDiagnostics();
   if (name === "settings") onSettingsOpen();
+  if (name === "system") refreshLogs();
+  if (name === "screens") renderLayoutMap();
+}
+
+function activeTab() {
+  const tab = document.querySelector(".tab.active");
+  return tab ? tab.dataset.tab : "dashboard";
 }
 
 document.querySelectorAll(".tab").forEach(tab => {
@@ -43,15 +96,15 @@ if (brandHome) brandHome.addEventListener("click", () => activateTab("dashboard"
 
 // Re-render on language change
 document.addEventListener("i18n-applied", () => {
-  if (cfg) { renderMonitors(); renderScreens(); }
+  if (cfg) { renderMonitors(); renderScreens(); renderPresNameHints(); }
+  renderStatusPills();
   refreshStatus();
   loadServices();
   loadPower();
   loadMaintenanceStatus();
   loadSystemUpdateStatus();
-  if (document.getElementById("tab-diagnostics").classList.contains("active")) {
-    loadDiagnostics();
-  }
+  if (activeTab() === "diagnostics") loadDiagnostics();
+  if (activeTab() === "settings") loadKeyringStatus();
 });
 
 // ---------- Laden ----------
@@ -61,10 +114,12 @@ async function load() {
     fetch("/api/monitors").then(r => r.json()),
   ]);
   cfg = c;
-  monitors = m;
+  monitors = Array.isArray(m) ? m : [];
   renderMonitors();
   renderScreens();
   renderSettings();
+  renderPresNameHints();
+  setDirty(false);
   refreshStatus();
 }
 
@@ -78,8 +133,9 @@ function renderMonitors() {
   }
   for (const m of monitors) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td><code>${m.name}</code></td><td>${m.primary ? t("common.yes") : ""}</td>
-      <td>${m.width} x ${m.height}</td><td>${m.x},${m.y}</td>
+    const rot = m.rotation && m.rotation !== "normal" ? ` &middot; ${escape(rotationLabel(m.rotation))}` : "";
+    tr.innerHTML = `<td><code>${escape(m.name)}</code></td><td>${m.primary ? t("common.yes") : ""}</td>
+      <td>${m.width} &times; ${m.height}${m.rate ? ` @ ${Math.round(m.rate)} Hz` : ""}${rot}</td><td>${m.x}, ${m.y}</td>
       <td>${m.active ? t("screens.live") : t("screens.connected_waiting")}</td>`;
     tb.appendChild(tr);
   }
@@ -88,77 +144,353 @@ function renderMonitors() {
 function updateLiveMonitors(nextMonitors) {
   const next = Array.isArray(nextMonitors) ? nextMonitors : [];
   const signature = list => JSON.stringify(list.map(m => [
-    m.name, !!m.active, m.x, m.y, m.width, m.height, m.geometry || ""
+    m.name, !!m.active, m.x, m.y, m.width, m.height, m.geometry || "", m.rotation || ""
   ]));
   if (signature(next) === signature(monitors)) return;
   monitors = next;
   renderMonitors();
   if (!cfg) return;
-  document.querySelectorAll("#screens select[data-k='output']").forEach((select, i) => {
-    const selected = (cfg.screens[i] && cfg.screens[i].output) || select.value;
-    select.innerHTML = outputOptions(selected);
-    select.value = selected;
+  document.querySelectorAll("#screens .screen-card").forEach(card => {
+    const i = Number(card.dataset.index);
+    const s = cfg.screens[i];
+    if (!s) return;
+    const out = card.querySelector("select[data-k='output']");
+    const res = card.querySelector("select[data-k='resolution']");
+    if (out) { out.innerHTML = outputOptions(s.output); out.value = s.output || ""; }
+    if (res) { res.innerHTML = resolutionOptions(s, i); res.value = s.resolution || ""; }
   });
+  renderLayoutMap();
+}
+
+function sortedMonitors(list) {
+  return [...list].sort((a, b) =>
+    (b.active - a.active) || (a.x - b.x) || (a.y - b.y) || a.name.localeCompare(b.name));
 }
 
 function outputOptions(selected) {
   const opts = [`<option value="">${t("screens.auto")}</option>`]
-    .concat(monitors.map(m => `<option value="${escape(m.name)}" ${m.name===selected?"selected":""}>${escape(m.name)} (${m.width}x${m.height})</option>`));
+    .concat(sortedMonitors(monitors).map((m, n) =>
+      `<option value="${escape(m.name)}" ${m.name === selected ? "selected" : ""}>${n + 1} &middot; ${escape(m.name)} (${m.width}x${m.height})</option>`));
   if (selected && !monitors.some(m => m.name === selected)) {
     opts.push(`<option value="${escape(selected)}" selected>${escape(selected)} (${t("screens.not_detected")})</option>`);
   }
   return opts.join("");
 }
 
+function monitorForScreen(s, i) {
+  const proc = lastProcs[String(i)];
+  const name = s.output || (proc && proc.output) || "";
+  return monitors.find(m => m.name === name) || null;
+}
+
+function resolutionOptions(s, i) {
+  const mon = monitorForScreen(s, i);
+  const seen = new Set();
+  const modes = [];
+  ((mon && mon.available_modes) || []).forEach(mode => {
+    if (mode && mode.name && !seen.has(mode.name)) { seen.add(mode.name); modes.push(mode.name); }
+  });
+  const preferred = mon && mon.preferred_mode;
+  const opts = [`<option value="">${t("screens.res_auto")}${preferred ? " (" + escape(preferred) + ")" : ""}</option>`]
+    .concat(modes.map(name => `<option value="${escape(name)}" ${name === s.resolution ? "selected" : ""}>${escape(name)}</option>`));
+  if (s.resolution && !seen.has(s.resolution)) {
+    opts.push(`<option value="${escape(s.resolution)}" selected>${escape(s.resolution)} (${t("screens.not_detected")})</option>`);
+  }
+  return opts.join("");
+}
+
+function rotationLabel(r) {
+  return tMaybe("screens.rot_" + r) || r;
+}
+
 // ---------- Bildschirme ----------
+function duplicateOutputs() {
+  const counts = {};
+  (cfg.screens || []).forEach(s => {
+    if (s.enabled && s.output) counts[s.output] = (counts[s.output] || 0) + 1;
+  });
+  return new Set(Object.keys(counts).filter(k => counts[k] > 1));
+}
+
+function screenStatus(i) {
+  const s = cfg && cfg.screens[i];
+  const p = lastProcs[String(i)];
+  if (!s || !s.enabled) return {cls: "", text: t("screens.status_disabled")};
+  if (lastKiosk.presentation_running) return {cls: "warn", text: t("screens.status_presentation")};
+  if (!p || !p.running) return {cls: "warn", text: t("screen.inactive")};
+  const output = p.output || s.output || "";
+  if (p.window_visible === true) return {cls: "ok", text: t("screens.status_live", {output})};
+  if (p.window_visible === false) return {cls: "bad", text: t("screens.status_hidden", {output})};
+  return {cls: "ok", text: t("screens.status_running", {output})};
+}
+
 function renderScreens() {
   const host = document.getElementById("screens");
   host.innerHTML = "";
+  const dupes = duplicateOutputs();
+  if (!cfg.screens.length) {
+    host.innerHTML = `<p class="muted">${t("screens.empty")}</p>`;
+  }
   cfg.screens.forEach((s, i) => {
-    const row = document.createElement("div");
-    row.className = "screen-row";
-    row.innerHTML = `
-      <h3>
-        <span class="left">${t("screens.label")} ${i+1}
-          <input type="text" data-k="name" value="${escape(s.name||'')}" class="inline" placeholder="${t("screens.label_name")}">
-        </span>
-        <button class="btn-del">${t("common.remove")}</button>
-      </h3>
-      <label class="check"><input type="checkbox" data-k="enabled" ${s.enabled?"checked":""}> ${t("screens.enabled")}</label>
-      <label>${t("screens.output")}
-        <select data-k="output">${outputOptions(s.output)}</select>
-      </label>
-      <label>${t("screens.url")} <input type="url" data-k="url" value="${escape(s.url||"")}"></label>
-      <label>${t("screens.rotation")}
-        <select data-k="rotation">
-          ${["normal","left","right","inverted"].map(r=>`<option ${r===s.rotation?"selected":""}>${r}</option>`).join("")}
-        </select>
-      </label>
-      <label>${t("screens.zoom")} <input type="number" step="0.1" min="0.3" max="3" data-k="zoom" value="${s.zoom||1}"></label>
-      <label>${t("screens.reload_interval")} <input type="number" min="0" data-k="reload_interval" value="${s.reload_interval||0}"></label>
-      <label class="check"><input type="checkbox" data-k="hide_cursor" ${s.hide_cursor?"checked":""}> ${t("screens.hide_cursor")}</label>
+    const card = document.createElement("div");
+    const dupe = s.enabled && s.output && dupes.has(s.output);
+    const missing = s.enabled && s.output && monitors.length && !monitors.some(m => m.name === s.output);
+    card.className = "screen-card" + (s.enabled ? "" : " disabled") + (dupe ? " has-error" : "");
+    card.dataset.index = String(i);
+    const st = screenStatus(i);
+    card.innerHTML = `
+      <div class="screen-head">
+        <span class="screen-num">${i + 1}</span>
+        <input type="text" class="name-input" data-k="name" value="${escape(s.name || "")}"
+               placeholder="${escape(t("screens.label_name"))}" aria-label="${escape(t("screens.label_name"))}" maxlength="80">
+        <span class="screen-badge ${st.cls}" data-status="${i}">${escape(st.text)}</span>
+        <label class="switch"><input type="checkbox" data-k="enabled" ${s.enabled ? "checked" : ""}><span class="track"></span><span>${t("screens.enabled")}</span></label>
+        <div class="screen-actions">
+          <button type="button" class="btn btn-sm ghost" data-screen-act="restart" title="${escape(t("screens.restart_one_hint"))}">${t("screens.restart_one")}</button>
+          <button type="button" class="btn btn-sm ghost danger" data-screen-act="remove">${t("common.remove")}</button>
+        </div>
+      </div>
+      <div class="screen-body">
+        <label class="span-4">${t("screens.url")}
+          <input type="url" data-k="url" value="${escape(s.url || "")}" placeholder="https://example.com" spellcheck="false">
+        </label>
+        <label class="span-2">${t("screens.output")}
+          <select data-k="output" class="${dupe || missing ? "invalid" : ""}">${outputOptions(s.output)}</select>
+        </label>
+        <label>${t("screens.resolution")}
+          <select data-k="resolution">${resolutionOptions(s, i)}</select>
+        </label>
+        <label>${t("screens.rotation")}
+          <select data-k="rotation">
+            ${["normal", "left", "right", "inverted"].map(r => `<option value="${r}" ${r === (s.rotation || "normal") ? "selected" : ""}>${escape(rotationLabel(r))}</option>`).join("")}
+          </select>
+        </label>
+        ${dupe ? `<p class="field-error span-4">${escape(t("screens.dupe_output", {output: s.output}))}</p>` : ""}
+        ${missing ? `<p class="field-error span-4">${escape(t("screens.output_missing", {output: s.output}))}</p>` : ""}
+        <label>${t("screens.zoom")} <input type="number" step="0.05" min="0.25" max="5" data-k="zoom" value="${s.zoom || 1}"></label>
+        <label>${t("screens.reload_interval")} <input type="number" min="0" step="1" data-k="reload_interval" value="${s.reload_interval || 0}"></label>
+        <label class="check span-2"><input type="checkbox" data-k="hide_cursor" ${s.hide_cursor ? "checked" : ""}> ${t("screens.hide_cursor")}</label>
+      </div>
     `;
-    row.querySelectorAll("[data-k]").forEach(el => {
-      el.addEventListener("change", () => {
+    card.querySelectorAll("[data-k]").forEach(el => {
+      const evt = (el.tagName === "SELECT" || el.type === "checkbox") ? "change" : "input";
+      el.addEventListener(evt, () => {
         const k = el.dataset.k;
-        let v = el.type === "checkbox" ? el.checked :
-                el.type === "number" ? parseFloat(el.value) : el.value;
+        let v;
+        if (el.type === "checkbox") v = el.checked;
+        else if (el.type === "number") v = el.value === "" ? null : Number(el.value);
+        else v = el.value;
         cfg.screens[i][k] = v;
+        setDirty(true);
+        if (k === "output" || k === "enabled") {
+          renderScreens();
+        } else if (k === "name" || k === "url") {
+          renderLayoutMap();
+        }
       });
     });
-    row.querySelector(".btn-del").addEventListener("click", () => {
+    card.querySelector("[data-screen-act='remove']").addEventListener("click", () => {
       if (confirm(t("screens.confirm_remove"))) {
         cfg.screens.splice(i, 1);
+        setDirty(true);
         renderScreens();
       }
     });
-    host.appendChild(row);
+    card.querySelector("[data-screen-act='restart']").addEventListener("click", async ev => {
+      if (dirty) { toast(t("screens.save_first"), "warn"); return; }
+      const btn = ev.currentTarget;
+      setBusy(btn, true);
+      try {
+        const r = await postJson(`/api/screen/${i}/restart`);
+        if (r.ok) toast(t("screens.restarted_one", {name: s.name || i + 1}), "ok");
+        else toast(t("common.error") + ": " + (translateBackendMessage(r.error) || "?"), "error");
+      } catch (e) {
+        toast(t("common.error") + ": " + e, "error");
+      } finally {
+        setBusy(btn, false);
+        setTimeout(refreshStatus, 600);
+      }
+    });
+    host.appendChild(card);
+  });
+  renderLayoutMap();
+}
+
+function updateScreenBadges() {
+  if (!cfg) return;
+  document.querySelectorAll("[data-status]").forEach(el => {
+    const st = screenStatus(Number(el.dataset.status));
+    el.className = "screen-badge " + st.cls;
+    el.textContent = st.text;
   });
 }
 
+// ---------- Monitor layout map ----------
+function effectiveOutput(s, i) {
+  // Die (evtl. noch ungespeicherte) Konfiguration hat Vorrang, damit Tauschen
+  // und Zuordnen sofort auf der Karte sichtbar sind. Automatische Seiten
+  // zeigen den Ausgang, auf dem sie gerade laufen.
+  const p = lastProcs[String(i)];
+  return s.output || (p && p.running && p.output) || "";
+}
+
+function renderLayoutMap() {
+  const host = document.getElementById("layout-map");
+  const hint = document.getElementById("layout-hint");
+  const swap = document.getElementById("layout-swap");
+  if (!host || !cfg) return;
+  const enabled = cfg.screens.map((s, i) => ({s, i})).filter(x => x.s.enabled);
+  swap.hidden = enabled.length !== 2;
+
+  const list = sortedMonitors(monitors);
+  const messages = [];
+  const dupes = duplicateOutputs();
+  dupes.forEach(o => messages.push(t("screens.dupe_output", {output: o})));
+  enabled.forEach(({s}) => {
+    if (s.output && list.length && !list.some(m => m.name === s.output)) {
+      messages.push(t("screens.output_missing", {output: s.output}));
+    }
+  });
+  const active = list.filter(m => m.active);
+  if (active.length && enabled.length > active.length) {
+    messages.push(t("layout.more_screens", {screens: enabled.length, monitors: active.length}));
+  }
+
+  if (!list.length) {
+    host.innerHTML = `<div class="layout-empty">${t("layout.none")}</div>`;
+  } else {
+    const boxes = [];
+    let maxRight = 0;
+    list.filter(m => m.active && m.width > 0).forEach(m => {
+      boxes.push({m, x: m.x, y: m.y, w: m.width, h: m.height});
+      maxRight = Math.max(maxRight, m.x + m.width);
+    });
+    list.filter(m => !m.active || !(m.width > 0)).forEach(m => {
+      const w = m.width || 1920, h = m.height || 1080;
+      boxes.push({m, x: maxRight + 200, y: 0, w, h, idle: true});
+      maxRight += 200 + w;
+    });
+    const minX = Math.min(...boxes.map(b => b.x));
+    const minY = Math.min(...boxes.map(b => b.y));
+    const totalW = Math.max(...boxes.map(b => b.x + b.w)) - minX;
+    const totalH = Math.max(...boxes.map(b => b.y + b.h)) - minY;
+    const availW = Math.max(200, host.clientWidth - 36);
+    const scaleX = Math.min(availW / totalW, 230 / totalH);
+    // Auf schmalen Displays (Handy) werden die Boxen sonst zu flach fuer
+    // Seitenname und Status. Getrennte Achsen-Skalierung erhaelt dabei die
+    // Anordnung und verhindert Ueberlappungen.
+    const minBoxH = Math.min(...boxes.map(b => b.h));
+    const scaleY = Math.max(scaleX, 118 / minBoxH);
+    const gap = 6;
+
+    const canvas = document.createElement("div");
+    canvas.className = "layout-canvas";
+    canvas.style.width = Math.round(totalW * scaleX) + "px";
+    canvas.style.height = Math.round(totalH * scaleY) + "px";
+
+    boxes.forEach((b, n) => {
+      const pages = cfg.screens
+        .map((s, i) => ({s, i}))
+        .filter(x => x.s.enabled && effectiveOutput(x.s, x.i) === b.m.name);
+      let cls = "idle";
+      let state = t("layout.no_page");
+      if (b.idle) {
+        state = t("screens.connected_waiting");
+      } else if (pages.length) {
+        const st = screenStatus(pages[0].i);
+        cls = st.cls || "warn";
+        state = st.text;
+      }
+      const el = document.createElement("div");
+      const w = Math.max(40, b.w * scaleX - gap);
+      const h = Math.max(40, b.h * scaleY - gap);
+      el.className = `mon ${cls}` + (w < 170 || h < 130 ? " compact" : "") + (b.idle ? " idle" : "");
+      el.style.left = Math.round((b.x - minX) * scaleX + gap / 2) + "px";
+      el.style.top = Math.round((b.y - minY) * scaleY + gap / 2) + "px";
+      el.style.width = Math.round(w) + "px";
+      el.style.height = Math.round(h) + "px";
+      const page = pages.length
+        ? pages.map(x => `${x.i + 1} &middot; ${escape(x.s.name || t("screens.label") + " " + (x.i + 1))}`).join("<br>")
+        : `<span class="muted">${t("layout.no_page")}</span>`;
+      const url = pages.length ? escape(pages[0].s.url || "") : "";
+      el.innerHTML = `
+        <div class="mon-head"><span class="mon-num">${n + 1}</span><span class="mon-name">${escape(b.m.name)}</span></div>
+        <div class="mon-page">${page}</div>
+        ${url ? `<div class="mon-url">${url}</div>` : ""}
+        <div class="mon-res">${b.m.width || "?"} &times; ${b.m.height || "?"}${b.m.primary ? " &middot; " + t("screens.col_primary") : ""}</div>
+        <div class="mon-state">${escape(state)}</div>`;
+      el.title = `${b.m.name} – ${state}`;
+      canvas.appendChild(el);
+    });
+    host.innerHTML = "";
+    host.appendChild(canvas);
+  }
+
+  hint.classList.toggle("warn", messages.length > 0);
+  hint.textContent = messages.length ? messages.join(" · ") : t("layout.ok_hint");
+}
+
+window.addEventListener("resize", () => {
+  clearTimeout(window.__layoutTimer);
+  window.__layoutTimer = setTimeout(renderLayoutMap, 150);
+});
+
+document.getElementById("layout-identify").addEventListener("click", async ev => {
+  const btn = ev.currentTarget;
+  setBusy(btn, true);
+  try {
+    const r = await postJson("/api/monitors/identify");
+    if (r.ok) toast(t("layout.identify_running", {count: (r.monitors || []).length}), "ok", 7000);
+    else toast(t("common.error") + ": " + (translateBackendMessage(r.error) || "?"), "error");
+  } catch (e) {
+    toast(t("common.error") + ": " + e, "error");
+  } finally {
+    setTimeout(() => setBusy(btn, false), 2500);
+  }
+});
+
+document.getElementById("layout-auto").addEventListener("click", () => {
+  const active = sortedMonitors(monitors).filter(m => m.active);
+  if (!active.length) { toast(t("layout.none"), "warn"); return; }
+  let n = 0;
+  cfg.screens.forEach(s => {
+    if (!s.enabled) return;
+    s.output = n < active.length ? active[n].name : "";
+    n += 1;
+  });
+  setDirty(true);
+  renderScreens();
+  toast(t("layout.auto_done"), "ok");
+});
+
+document.getElementById("layout-swap").addEventListener("click", () => {
+  const enabled = cfg.screens.map((s, i) => ({s, i})).filter(x => x.s.enabled);
+  if (enabled.length !== 2) return;
+  const [a, b] = enabled;
+  const outA = effectiveOutput(a.s, a.i);
+  const outB = effectiveOutput(b.s, b.i);
+  a.s.output = outB;
+  b.s.output = outA;
+  setDirty(true);
+  renderScreens();
+  toast(t("layout.swap_done"), "ok");
+});
+
+document.getElementById("layout-refresh").addEventListener("click", async ev => {
+  const btn = ev.currentTarget;
+  setBusy(btn, true);
+  try {
+    const m = await fetch("/api/monitors?refresh=1").then(r => r.json());
+    updateLiveMonitors(m);
+    renderLayoutMap();
+  } finally {
+    setBusy(btn, false);
+  }
+});
+
 function escape(s) {
-  return String(s).replace(/[&<>"']/g, c => ({
-    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  return String(s ?? "").replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
   }[c]));
 }
 
@@ -177,8 +509,9 @@ function tMaybe(key, params) {
 function renderSettings() {
   document.getElementById("auto_start").checked = !!cfg.auto_start;
   document.getElementById("restart_on_crash").checked = !!cfg.restart_on_crash;
+  document.getElementById("disable_keyring").checked = cfg.disable_keyring !== false;
   document.getElementById("port").value = cfg.port || 2411;
-  document.getElementById("chromium_flags").value = (cfg.chromium_flags||[]).join("\n");
+  document.getElementById("chromium_flags").value = (cfg.chromium_flags || []).join("\n");
   const ar = cfg.auto_reboot || {};
   document.getElementById("auto_reboot_enabled").checked = !!ar.enabled;
   document.getElementById("auto_reboot_mode").value = ar.mode || "daily";
@@ -188,7 +521,9 @@ function renderSettings() {
   const a = cfg.auth || {};
   document.getElementById("auth_enabled").checked = !!a.enabled;
   document.getElementById("auth_username").value = a.username || "admin";
-  document.getElementById("auth_password").value = a.password || "";
+  const pw = document.getElementById("auth_password");
+  pw.value = "";
+  pw.placeholder = a.password_set ? t("settings.password_keep") : t("settings.password_new");
 }
 
 function updateAutoRebootFields() {
@@ -201,50 +536,112 @@ function updateAutoRebootFields() {
   document.getElementById(id).addEventListener("change", updateAutoRebootFields);
 });
 
+document.querySelectorAll("#tab-settings input, #tab-settings select, #tab-settings textarea")
+  .forEach(el => {
+    if (el.id === "import-file") return;
+    el.addEventListener(el.tagName === "SELECT" || el.type === "checkbox" ? "change" : "input",
+                        () => setDirty(true));
+  });
+
+async function loadKeyringStatus() {
+  const el = document.getElementById("keyring-status");
+  try {
+    const k = await fetch("/api/keyring").then(r => r.json());
+    const parts = [
+      k.autostart_disabled ? t("keyring.autostart_off") : t("keyring.autostart_on"),
+      t("keyring.chromium_basic"),
+    ];
+    if (k.daemon_running) parts.push(t("keyring.daemon_running"));
+    el.textContent = parts.join(" · ");
+  } catch (e) {
+    el.textContent = "";
+  }
+}
+
 document.getElementById("add-screen").addEventListener("click", () => {
   cfg.screens.push({
     name: t("screens.new"), enabled: true, url: "https://example.com",
-    output: "", rotation: "normal", hide_cursor: true,
+    output: "", resolution: "", rotation: "normal", hide_cursor: true,
     reload_interval: 0, zoom: 1.0,
   });
+  setDirty(true);
   renderScreens();
+  const cards = document.querySelectorAll("#screens .screen-card");
+  const last = cards[cards.length - 1];
+  if (last) {
+    last.scrollIntoView({behavior: "smooth", block: "center"});
+    const url = last.querySelector("[data-k='url']");
+    if (url) url.focus();
+  }
 });
 
-document.getElementById("save").addEventListener("click", async () => {
+function collectSettings() {
   cfg.auto_start = document.getElementById("auto_start").checked;
   cfg.restart_on_crash = document.getElementById("restart_on_crash").checked;
+  cfg.disable_keyring = document.getElementById("disable_keyring").checked;
   cfg.port = parseInt(document.getElementById("port").value, 10) || 2411;
   cfg.chromium_flags = document.getElementById("chromium_flags").value
-    .split("\n").map(s=>s.trim()).filter(Boolean);
+    .split("\n").map(s => s.trim()).filter(Boolean);
   cfg.auto_reboot = {
     enabled: document.getElementById("auto_reboot_enabled").checked,
     mode: document.getElementById("auto_reboot_mode").value,
     interval_minutes: parseInt(document.getElementById("auto_reboot_interval").value, 10) || 1440,
     time: document.getElementById("auto_reboot_time").value || "06:00",
   };
+  const password = document.getElementById("auth_password").value;
   cfg.auth = {
     enabled: document.getElementById("auth_enabled").checked,
-    username: document.getElementById("auth_username").value || "admin",
-    password: document.getElementById("auth_password").value || "",
+    username: document.getElementById("auth_username").value.trim() || "admin",
+    password,
+    password_set: !!(cfg.auth && cfg.auth.password_set) || !!password,
   };
+}
 
-  const r = await fetch("/api/config", {
-    method: "POST", headers: {"Content-Type":"application/json"},
-    body: JSON.stringify(cfg)
-  }).then(r=>r.json());
+document.getElementById("save").addEventListener("click", async () => {
+  const btn = document.getElementById("save");
   const msg = document.getElementById("msg");
+  collectSettings();
+  const dupes = duplicateOutputs();
+  if (dupes.size) {
+    const text = t("screens.dupe_output", {output: [...dupes].join(", ")});
+    toast(text, "error", 7000);
+    activateTab("screens");
+    return;
+  }
+  if (cfg.auth.enabled && !cfg.auth.password_set) {
+    toast(t("settings.error.auth_required_fields"), "error", 7000);
+    activateTab("settings");
+    document.getElementById("auth_password").focus();
+    return;
+  }
+  setBusy(btn, true);
   msg.classList.remove("error");
-  if (r.ok) {
-    msg.textContent = t("common.applying");
-    await fetch("/api/action/restart", {method:"POST"});
+  msg.textContent = t("common.applying");
+  try {
+    const r = await postJson("/api/config", cfg);
+    if (!r.ok) {
+      msg.classList.add("error");
+      msg.textContent = "";
+      toast(t("common.error") + ": " + (translateBackendMessage(r.error) || "?"), "error", 8000);
+      return;
+    }
+    const applied = await postJson("/api/action/apply");
     await load();
-    msg.textContent = t("common.saved_restarted");
+    msg.textContent = "";
+    if (applied.ok === false) {
+      toast(t("common.error") + ": " + (translateBackendMessage(applied.error) || "?"), "error", 8000);
+    } else {
+      toast(t("common.saved_applied"), "ok");
+    }
     loadAuthStatus();
     loadMaintenanceStatus();
-    setTimeout(()=>msg.textContent="", 4000);
-  } else {
+    loadKeyringStatus();
+  } catch (e) {
     msg.classList.add("error");
-    msg.textContent = t("common.error") + ": " + (translateBackendMessage(r.error) || "?");
+    msg.textContent = "";
+    toast(t("common.error") + ": " + e, "error");
+  } finally {
+    setBusy(btn, false);
   }
 });
 
@@ -257,19 +654,21 @@ document.querySelectorAll("[data-act]").forEach(b => {
       "shutdown": t("dash.confirm_shutdown"),
     };
     if (confirms[act] && !confirm(confirms[act])) return;
-    b.disabled = true;
+    setBusy(b, true);
     try {
-      const r = await fetch("/api/action/" + act, {method:"POST"});
+      const r = await fetch("/api/action/" + act, {method: "POST"});
       if (r.status === 401) { location.href = "/login"; return; }
       if (!r.ok) {
         let err = "?";
-        try { const j = await r.json(); err = j.error || err; } catch {}
-        alert(t("common.error") + ": " + (translateBackendMessage(err) || err));
+        try { const j = await r.json(); err = j.error || err; } catch (e) {}
+        toast(t("common.error") + ": " + (translateBackendMessage(err) || err), "error", 8000);
+      } else {
+        toast(tMaybe("dash.done_" + act.replace("-", "_")) || t("common.done"), "ok", 2500);
       }
     } catch (e) {
-      alert(t("common.error") + ": " + e);
+      toast(t("common.error") + ": " + e, "error");
     }
-    setTimeout(()=>{ b.disabled = false; refreshStatus(); }, 800);
+    setTimeout(() => { setBusy(b, false); refreshStatus(); }, 800);
   });
 });
 
@@ -297,18 +696,40 @@ document.getElementById("btn-logout").addEventListener("click", async () => {
   location.href = "/login";
 });
 
-// ---------- Import ----------
+// ---------- Import / Export ----------
+document.getElementById("export-config").addEventListener("click", async () => {
+  try {
+    const r = await fetch("/api/config/export");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const blob = await r.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "piscreenportal-config.json";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  } catch (e) {
+    toast(t("common.error") + ": " + e, "error");
+  }
+});
+
 document.getElementById("import-file").addEventListener("change", async (e) => {
   const f = e.target.files[0]; if (!f) return;
   try {
     const data = JSON.parse(await f.text());
-    const r = await fetch("/api/config/import", {
-      method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify(data)
-    }).then(r=>r.json());
-    if (r.ok) { alert(t("settings.import_ok")); location.reload(); }
-    else alert(t("common.error")+": "+(translateBackendMessage(r.error) || "?"));
-  } catch { alert(t("settings.import_invalid")); }
+    const r = await postJson("/api/config/import", data);
+    if (r.ok) {
+      toast(t("settings.import_ok"), "ok");
+      setDirty(false);
+      setTimeout(() => location.reload(), 900);
+    } else {
+      toast(t("common.error") + ": " + (translateBackendMessage(r.error) || "?"), "error", 8000);
+    }
+  } catch (err) {
+    toast(t("settings.import_invalid"), "error");
+  } finally {
+    e.target.value = "";
+  }
 });
 
 // ---------- Maintenance ----------
@@ -344,8 +765,9 @@ document.getElementById("maintenance-refresh").addEventListener("click", loadMai
 
 function onSettingsOpen() {
   loadMaintenanceStatus();
+  loadKeyringStatus();
   scanAppUpdates({auto: true});
-  scanSystemUpdates({auto: true});
+  loadSystemUpdateStatus();
 }
 
 function renderUpdateScan(j) {
@@ -376,12 +798,12 @@ function renderUpdateScan(j) {
   }
 }
 
-async function scanAppUpdates(opts={}) {
+async function scanAppUpdates(opts = {}) {
   const btn = document.getElementById("scan-updates");
   const msg = document.getElementById("updates-msg");
   const status = document.getElementById("update-status");
   if (btn.disabled) return;
-  btn.disabled = true;
+  setBusy(btn, true);
   msg.classList.remove("error");
   status.classList.remove("error", "ok");
   msg.textContent = t("maint.scan_running");
@@ -403,7 +825,7 @@ async function scanAppUpdates(opts={}) {
     msg.classList.add("error");
     msg.textContent = t("common.error") + ": " + e;
   } finally {
-    btn.disabled = false;
+    setBusy(btn, false);
     if (!opts.auto) {
       setTimeout(() => { msg.textContent = ""; msg.classList.remove("error"); }, 9000);
     }
@@ -416,7 +838,7 @@ document.getElementById("boot-optimize").addEventListener("click", async () => {
   if (!confirm(t("boot.confirm_optimize"))) return;
   const btn = document.getElementById("boot-optimize");
   const msg = document.getElementById("boot-msg");
-  btn.disabled = true;
+  setBusy(btn, true);
   msg.classList.remove("error");
   msg.textContent = t("boot.optimize_running");
   try {
@@ -434,7 +856,7 @@ document.getElementById("boot-optimize").addEventListener("click", async () => {
     msg.classList.add("error");
     msg.textContent = t("common.error") + ": " + e;
   } finally {
-    btn.disabled = false;
+    setBusy(btn, false);
     setTimeout(() => { msg.textContent = ""; msg.classList.remove("error"); }, 9000);
   }
 });
@@ -443,7 +865,7 @@ document.getElementById("git-update").addEventListener("click", async () => {
   if (!confirm(t("maint.confirm_update"))) return;
   const btn = document.getElementById("git-update");
   const msg = document.getElementById("updates-msg");
-  btn.disabled = true;
+  setBusy(btn, true);
   msg.classList.remove("error");
   msg.textContent = t("maint.update_running");
   try {
@@ -456,17 +878,21 @@ document.getElementById("git-update").addEventListener("click", async () => {
       if (j.local_changes_stashed) {
         text += " " + t("maint.local_changes_stashed");
       }
+      if (j.dependencies === "failed") {
+        text += " " + t("maint.deps_failed");
+      }
       msg.textContent = text;
+      btn.classList.remove("busy");
     } else {
       msg.classList.add("error");
       msg.textContent = t("maint.update_failed") + " " +
         (translateBackendMessage(j.error) || "?");
-      btn.disabled = false;
+      setBusy(btn, false);
     }
   } catch (e) {
     msg.classList.add("error");
     msg.textContent = t("common.error") + ": " + e;
-    btn.disabled = false;
+    setBusy(btn, false);
   }
 });
 
@@ -513,7 +939,7 @@ function renderSystemUpdates(d) {
     list.innerHTML = shown.map(p => `
       <div class="update-package">
         <span class="pkg-name">${escape(p.name)}</span>
-        <span class="pkg-version">${escape(p.current_version || "?")} -> ${escape(p.candidate_version || "?")}</span>
+        <span class="pkg-version">${escape(p.current_version || "?")} &rarr; ${escape(p.candidate_version || "?")}</span>
       </div>
     `).join("") + (packages.length > shown.length
       ? `<p class="muted">${t("updates.system_more", {count: packages.length - shown.length})}</p>`
@@ -530,14 +956,15 @@ async function loadSystemUpdateStatus() {
   try {
     const d = await fetch("/api/maintenance/system-updates/status").then(r => r.json());
     renderSystemUpdates(d);
+    if (d.running) setTimeout(pollSystemUpdates, 4000);
   } catch (e) {}
 }
 
-async function scanSystemUpdates(opts={}) {
+async function scanSystemUpdates(opts = {}) {
   const btn = document.getElementById("system-updates-scan");
   const msg = document.getElementById("system-updates-msg");
   if (btn.disabled) return;
-  btn.disabled = true;
+  setBusy(btn, true);
   msg.classList.remove("error");
   msg.textContent = t("updates.system_scanning");
   renderSystemUpdates({running: true, mode: "scan", packages: []});
@@ -558,7 +985,7 @@ async function scanSystemUpdates(opts={}) {
     msg.classList.add("error");
     msg.textContent = t("common.error") + ": " + e;
   } finally {
-    btn.disabled = false;
+    setBusy(btn, false);
     if (!opts.auto) {
       setTimeout(() => { msg.textContent = ""; msg.classList.remove("error"); }, 12000);
     }
@@ -566,16 +993,20 @@ async function scanSystemUpdates(opts={}) {
 }
 
 async function pollSystemUpdates() {
-  const d = await fetch("/api/maintenance/system-updates/status").then(r => r.json());
-  renderSystemUpdates(d);
-  if (d.running) {
-    setTimeout(pollSystemUpdates, 4000);
-  } else {
-    const msg = document.getElementById("system-updates-msg");
-    msg.classList.toggle("error", d.ok === false);
-    msg.textContent = d.ok === false
-      ? t("updates.system_install_failed") + " " + (translateBackendMessage(d.error) || d.error || "?")
-      : t("updates.system_install_done");
+  try {
+    const d = await fetch("/api/maintenance/system-updates/status").then(r => r.json());
+    renderSystemUpdates(d);
+    if (d.running) {
+      setTimeout(pollSystemUpdates, 4000);
+    } else {
+      const msg = document.getElementById("system-updates-msg");
+      msg.classList.toggle("error", d.ok === false);
+      msg.textContent = d.ok === false
+        ? t("updates.system_install_failed") + " " + (translateBackendMessage(d.error) || d.error || "?")
+        : t("updates.system_install_done");
+    }
+  } catch (e) {
+    setTimeout(pollSystemUpdates, 8000);
   }
 }
 
@@ -609,18 +1040,18 @@ document.getElementById("system-updates-install").addEventListener("click", asyn
 });
 
 // ---------- Status / Sysinfo ----------
-function tile(label, value, cls="") {
-  return `<div class="tile ${cls}"><b>${label}</b><span>${value ?? "-"}</span></div>`;
+function tile(label, value, cls = "") {
+  return `<div class="tile ${cls}"><b>${escape(label)}</b><span>${escape(value ?? "-")}</span></div>`;
 }
 
-function renderSysinfo(sys, target, full=false) {
+function renderSysinfo(sys, target, full = false) {
   const el = document.getElementById(target);
   if (!sys) { el.textContent = "-"; return; }
   const mem = sys.memory || {};
   const disk = sys.disk || {};
   let html = tile(t("system.hostname"), sys.hostname)
     + tile(t("system.ip"), sys.ip)
-    + tile(t("system.cpu_temp"), sys.cpu_temp)
+    + tile(t("system.cpu_temp"), sys.cpu_temp, tempClass(sys.cpu_temp))
     + tile(t("system.cpu_load"), sys.cpu_percent || "-")
     + tile(t("system.ram_free"), mem.MemAvailable || "-")
     + tile(t("system.uptime"), sys.uptime || "-");
@@ -629,24 +1060,32 @@ function renderSysinfo(sys, target, full=false) {
          + tile(t("system.kernel"), sys.kernel || "-")
          + tile(t("system.load_avg"), sys.load_avg || "-")
          + tile(t("system.ram_total"), mem.MemTotal || "-")
-         + tile(t("system.swap"), `${mem.SwapFree||"-"} / ${mem.SwapTotal||"-"}`)
-         + tile(t("system.disk_free"), `${disk.free||"-"} (${disk.percent||"-"})`)
+         + tile(t("system.swap"), `${mem.SwapFree || "-"} / ${mem.SwapTotal || "-"}`)
+         + tile(t("system.disk_free"), `${disk.free || "-"} (${disk.percent || "-"})`)
          + tile(t("system.disk_total"), disk.total || "-")
          + tile(t("system.time"), sys.time || "-");
   }
   el.innerHTML = html;
 }
 
+function tempClass(text) {
+  const v = parseFloat(String(text || ""));
+  if (!isFinite(v)) return "";
+  if (v >= 80) return "bad";
+  if (v >= 70) return "warn";
+  return "";
+}
+
 function renderScreenStatus(procs) {
   const el = document.getElementById("screen-status");
-  if (!cfg || !cfg.screens.length) { el.innerHTML = ''; return; }
+  if (!cfg || !cfg.screens.length) { el.innerHTML = `<p class="muted">${t("screens.empty")}</p>`; return; }
   let html = "";
   cfg.screens.forEach((s, i) => {
     const p = procs[String(i)];
     const running = p && p.running;
     const output = (p && p.output) || s.output || t("diag.unassigned");
-    let value = t("screen.inactive");
-    let cls = "warn";
+    let value = s.enabled ? t("screen.inactive") : t("screens.status_disabled");
+    let cls = s.enabled ? "warn" : "";
     if (running && p.window_visible === true) {
       value = t("screen.visible", {pid: p.pid, output});
       cls = "ok";
@@ -657,26 +1096,74 @@ function renderScreenStatus(procs) {
       value = t("screen.running_unverified", {pid: p.pid, output});
       cls = "ok";
     }
-    html += tile(`${s.name || t("screens.label")+" "+(i+1)}`,
-      value, cls);
+    html += tile(`${i + 1} · ${s.name || t("screens.label") + " " + (i + 1)}`, value, cls);
   });
   el.innerHTML = html;
 }
 
+let lastSystem = null;
+
+function renderStatusPills() {
+  const kiosk = document.getElementById("pill-kiosk");
+  const screens = document.getElementById("pill-screens");
+  const temp = document.getElementById("pill-temp");
+  const setPill = (el, cls, text) => {
+    el.className = "pill " + cls + (el.id === "pill-temp" ? " pill-plain" : "");
+    el.querySelector(".pill-text").textContent = text;
+  };
+  if (lastKiosk.presentation_running) {
+    setPill(kiosk, "warn", t("pill.presentation"));
+  } else if (lastKiosk.desired_running) {
+    setPill(kiosk, "ok", t("pill.kiosk_on"));
+  } else {
+    setPill(kiosk, "warn", t("pill.kiosk_off"));
+  }
+  if (cfg) {
+    const enabled = cfg.screens.map((s, i) => ({s, i})).filter(x => x.s.enabled);
+    const live = enabled.filter(x => {
+      const p = lastProcs[String(x.i)];
+      return p && p.running && p.window_visible !== false;
+    }).length;
+    const cls = !enabled.length ? "" : live === enabled.length ? "ok" : live ? "warn" : "bad";
+    setPill(screens, cls, t("pill.screens", {live, total: enabled.length}));
+  }
+  if (lastSystem && lastSystem.cpu_temp && lastSystem.cpu_temp !== "?") {
+    setPill(temp, tempClass(lastSystem.cpu_temp), lastSystem.cpu_temp);
+    temp.hidden = false;
+  } else {
+    temp.hidden = true;
+  }
+}
+
 async function refreshStatus() {
   try {
-    const s = await fetch("/api/status").then(r=>r.json());
+    const s = await fetch("/api/status").then(r => r.json());
+    lastProcs = s.processes || {};
+    lastKiosk = s.kiosk || {};
+    lastSystem = s.system || null;
     renderSysinfo(s.system, "sysinfo", false);
     renderSysinfo(s.system, "sysinfo-full", true);
-    renderScreenStatus(s.processes || {});
+    renderScreenStatus(lastProcs);
     updateLiveMonitors(s.monitors || []);
+    updateScreenBadges();
+    if (activeTab() === "screens") renderLayoutMap();
+    renderStatusPills();
+    if (s.version) document.getElementById("app-version").textContent = "v" + s.version;
     document.getElementById("status").textContent = JSON.stringify(s.processes, null, 2);
+    if (activeTab() === "system") refreshLogs();
+  } catch (e) {}
+}
+
+async function refreshLogs() {
+  try {
     const logLang = encodeURIComponent(window.I18N.lang || "en");
-    const log = await fetch("/api/logs?lang=" + logLang).then(r=>r.text());
+    const log = await fetch("/api/logs?lang=" + logLang).then(r => r.text());
     const l = document.getElementById("log");
+    const atBottom = l.scrollHeight - l.scrollTop - l.clientHeight < 40;
     l.textContent = log || t("system.log_empty");
-    l.scrollTop = l.scrollHeight;
-  } catch(e) {}
+    if (atBottom || !l.dataset.loaded) l.scrollTop = l.scrollHeight;
+    l.dataset.loaded = "1";
+  } catch (e) {}
 }
 
 // ---------- Display diagnosis ----------
@@ -714,7 +1201,7 @@ function renderDiagnosticAssignments(assignments) {
 
 async function loadDiagnostics() {
   const btn = document.getElementById("diagnostics-refresh");
-  btn.disabled = true;
+  setBusy(btn, true);
   try {
     const data = await fetch("/api/diagnostics").then(r => r.json());
     document.getElementById("diagnostics-time").textContent = data.captured_at || "-";
@@ -728,7 +1215,7 @@ async function loadDiagnostics() {
     document.getElementById("diagnostics-assignments").textContent =
       t("common.error") + ": " + e;
   } finally {
-    btn.disabled = false;
+    setBusy(btn, false);
   }
 }
 
@@ -743,7 +1230,7 @@ async function loadWifi() {
   cur.innerHTML = t("common.loading");
   saved.innerHTML = t("common.loading");
   try {
-    const data = await fetch("/api/wifi").then(r=>r.json());
+    const data = await fetch("/api/wifi").then(r => r.json());
     if (!data.current.available) {
       cur.innerHTML = `<p class="muted">${t("wifi.na")}</p>`;
       box.innerHTML = "";
@@ -762,14 +1249,12 @@ async function loadWifi() {
             <span class="ssid">${escape(p.name)}</span>
             <span class="meta">${t("wifi.autoconnect")}: ${p.autoconnect ? t("common.yes") : t("common.no")}</span>
           </div>
-          <button class="btn">${t("common.remove")}</button>
+          <button class="btn btn-sm">${t("common.remove")}</button>
         `;
         div.querySelector("button").addEventListener("click", async () => {
           if (!confirm(t("wifi.confirm_forget") + ' "' + p.name + '"')) return;
-          await fetch("/api/wifi/forget", {
-            method:"POST", headers:{"Content-Type":"application/json"},
-            body: JSON.stringify({name: p.name})
-          });
+          const r = await postJson("/api/wifi/forget", {name: p.name});
+          if (!r.ok) toast(t("common.error") + ": " + (r.message || translateBackendMessage(r.error) || "?"), "error");
           loadWifi();
         });
         saved.appendChild(div);
@@ -802,13 +1287,13 @@ async function loadWifi() {
             ${n.in_use ? " &middot; " + t("wifi.active") : ""}
           </span>
         </div>
-        <button class="btn ${n.in_use?'':'primary'}">${n.in_use ? t("wifi.reconnect") : t("wifi.connect")}</button>
+        <button class="btn btn-sm ${n.in_use ? "" : "primary"}">${n.in_use ? t("wifi.reconnect") : t("wifi.connect")}</button>
       `;
       div.querySelector("button").addEventListener("click", () => openWifiModal(n));
       box.appendChild(div);
     });
-  } catch(e) {
-    box.innerHTML = `<p class="muted">${t("common.error")}: `+e+'</p>';
+  } catch (e) {
+    box.innerHTML = `<p class="muted">${t("common.error")}: ${escape(e)}</p>`;
   }
 }
 
@@ -821,10 +1306,7 @@ document.getElementById("wifi-add-btn").addEventListener("click", async () => {
   if (!ssid) { msg.textContent = t("wifi.ssid_missing"); return; }
   msg.textContent = t("common.loading");
   try {
-    const r = await fetch("/api/wifi/add", {
-      method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({ssid, password, hidden, autoconnect})
-    }).then(r=>r.json());
+    const r = await postJson("/api/wifi/add", {ssid, password, hidden, autoconnect});
     msg.textContent = r.message || translateBackendMessage(r.error) || (r.ok ? t("common.saved") : t("common.error"));
     if (r.ok) {
       document.getElementById("wifi-add-ssid").value = "";
@@ -832,7 +1314,7 @@ document.getElementById("wifi-add-btn").addEventListener("click", async () => {
       document.getElementById("wifi-add-hidden").checked = false;
       setTimeout(loadWifi, 1500);
     }
-  } catch(e) {
+  } catch (e) {
     msg.textContent = t("common.error") + ": " + e;
   }
 });
@@ -840,50 +1322,62 @@ document.getElementById("wifi-add-btn").addEventListener("click", async () => {
 document.getElementById("wifi-rescan").addEventListener("click", loadWifi);
 document.getElementById("wifi-reset").addEventListener("click", async () => {
   if (!confirm(t("wifi.confirm_reset"))) return;
-  await fetch("/api/wifi/reset", {method:"POST"});
+  const r = await postJson("/api/wifi/reset");
+  if (!r.ok) toast(t("common.error") + ": " + (r.message || "?"), "error");
   setTimeout(loadWifi, 3000);
 });
 
 // ---------- WiFi Modal ----------
 function openWifiModal(n) {
   const modal = document.getElementById("wifi-modal");
+  const pwInput = document.getElementById("wifi-password");
   document.getElementById("wifi-modal-ssid").textContent = n.ssid;
-  document.getElementById("wifi-password").value = "";
+  pwInput.value = "";
   document.getElementById("wifi-modal-msg").textContent = "";
   modal.hidden = false;
-  document.getElementById("wifi-password").focus();
-  const isOpen = !n.security || n.security === "--" || n.security.toLowerCase() === "open";
-  document.getElementById("wifi-password").disabled = isOpen;
+  const isOpen = !n.security || n.security === "--" || n.security.toLowerCase() === "open"
+    || n.security === "offen";
+  pwInput.disabled = isOpen;
+  if (!isOpen) pwInput.focus();
 
-  document.getElementById("wifi-cancel").onclick = () => { modal.hidden = true; };
+  const close = () => { modal.hidden = true; document.removeEventListener("keydown", onKey); };
+  const onKey = e => {
+    if (e.key === "Escape") close();
+    if (e.key === "Enter") document.getElementById("wifi-connect").click();
+  };
+  document.addEventListener("keydown", onKey);
+  modal.onclick = e => { if (e.target === modal) close(); };
+  document.getElementById("wifi-cancel").onclick = close;
   document.getElementById("wifi-connect").onclick = async () => {
-    const pw = document.getElementById("wifi-password").value;
+    const pw = pwInput.value;
     const msg = document.getElementById("wifi-modal-msg");
     msg.textContent = t("wifi.connecting");
     try {
-      const r = await fetch("/api/wifi/connect", {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({ssid:n.ssid, password:pw}),
-      }).then(r=>r.json());
+      const r = await postJson("/api/wifi/connect", {ssid: n.ssid, password: pw});
       if (r.ok) {
         msg.textContent = t("wifi.connected");
-        setTimeout(() => { modal.hidden = true; loadWifi(); }, 1500);
+        setTimeout(() => { close(); loadWifi(); }, 1500);
       } else {
         msg.textContent = t("common.error") + ": " + (r.message || translateBackendMessage(r.error) || "?");
       }
-    } catch(e) {
+    } catch (e) {
       msg.textContent = t("common.error") + ": " + e;
     }
   };
 }
 
 // ---------- Präsentation ----------
+function renderPresNameHints() {
+  const name = (cfg && cfg.presentation && cfg.presentation.airplay_name) || "PiScreenPortal";
+  document.querySelectorAll(".pres-name-hint").forEach(el => { el.textContent = name; });
+}
+
 function renderPresSettings() {
   const p = (cfg && cfg.presentation) || {};
   document.getElementById("pres-name").value = p.airplay_name || "PiScreenPortal";
   document.getElementById("pres-resolution").value = p.resolution || "1920x1080";
   document.getElementById("pres-stop-kiosk").checked = p.stop_kiosk_while_active !== false;
-  document.getElementById("pres-name-hint").textContent = p.airplay_name || "PiScreenPortal";
+  renderPresNameHints();
 }
 
 async function loadPresentation() {
@@ -891,7 +1385,7 @@ async function loadPresentation() {
   try {
     const s = await fetch("/api/presentation/status").then(r => r.json());
     renderPresStatus(s);
-  } catch(e) {}
+  } catch (e) {}
 }
 
 function renderPresStatus(s) {
@@ -899,56 +1393,80 @@ function renderPresStatus(s) {
   let html = tile(t("pres.installed"), s.available ? t("common.yes") : t("common.no"), s.available ? "ok" : "warn");
   html += tile(t("pres.status"), s.running ? t("pres.status_active") : t("pres.status_stopped"), s.running ? "ok" : "");
   if (s.running && s.started_at) {
-    const secs = Math.floor(Date.now()/1000 - s.started_at);
-    const mins = Math.floor(secs/60);
-    html += tile(t("pres.uptime"), mins>0 ? `${mins} min ${secs%60} s` : `${secs} s`);
+    const secs = Math.max(0, Math.floor(Date.now() / 1000 - s.started_at));
+    const mins = Math.floor(secs / 60);
+    html += tile(t("pres.uptime"), mins > 0 ? `${mins} min ${secs % 60} s` : `${secs} s`);
   }
   box.innerHTML = html;
 }
 
-// Präsentations-Buttons
-document.getElementById("pres-start").addEventListener("click", async () => {
+document.getElementById("pres-start").addEventListener("click", async ev => {
+  const btn = ev.currentTarget;
   // Einstellungen vorher speichern, damit sie beim Start verwendet werden
   await savePresSettings();
   const msg = document.getElementById("pres-msg");
   msg.textContent = t("pres.starting");
-  const r = await fetch("/api/presentation/start", {method:"POST"}).then(r=>r.json());
-  msg.textContent = r.message || (r.ok ? t("common.saved") : t("common.error"));
-  renderPresStatus(r.status || {});
+  setBusy(btn, true);
+  try {
+    const r = await postJson("/api/presentation/start");
+    msg.textContent = r.message || (r.ok ? t("common.saved") : t("common.error"));
+    if (!r.ok) toast(r.message || t("common.error"), "error", 7000);
+    renderPresStatus(r.status || {});
+  } finally {
+    setBusy(btn, false);
+    refreshStatus();
+  }
 });
 
-document.getElementById("pres-stop").addEventListener("click", async () => {
+document.getElementById("pres-stop").addEventListener("click", async ev => {
+  const btn = ev.currentTarget;
   const msg = document.getElementById("pres-msg");
   msg.textContent = t("pres.stopping");
-  const r = await fetch("/api/presentation/stop", {method:"POST"}).then(r=>r.json());
-  msg.textContent = t("pres.stopped_running");
-  renderPresStatus(r.status || {});
+  setBusy(btn, true);
+  try {
+    const r = await postJson("/api/presentation/stop");
+    msg.textContent = t("pres.stopped_running");
+    renderPresStatus(r.status || {});
+  } finally {
+    setBusy(btn, false);
+    refreshStatus();
+  }
 });
 
 async function savePresSettings() {
-  if (!cfg.presentation) cfg.presentation = {};
-  cfg.presentation.airplay_name = document.getElementById("pres-name").value || "PiScreenPortal";
-  cfg.presentation.resolution = document.getElementById("pres-resolution").value;
-  cfg.presentation.stop_kiosk_while_active = document.getElementById("pres-stop-kiosk").checked;
-  await fetch("/api/config", {
-    method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify(cfg)
-  });
-  document.getElementById("pres-name-hint").textContent = cfg.presentation.airplay_name;
+  // Nur die Praesentations-Einstellungen speichern. Ungespeicherte
+  // Bildschirm-Aenderungen duerfen dabei nicht still mitgespeichert werden.
+  const presentation = {
+    ...((cfg && cfg.presentation) || {}),
+    airplay_name: document.getElementById("pres-name").value.trim() || "PiScreenPortal",
+    resolution: document.getElementById("pres-resolution").value,
+    stop_kiosk_while_active: document.getElementById("pres-stop-kiosk").checked,
+  };
+  try {
+    const fresh = await fetch("/api/config").then(r => r.json());
+    fresh.presentation = presentation;
+    const r = await postJson("/api/config", fresh);
+    if (!r.ok) {
+      toast(t("common.error") + ": " + (translateBackendMessage(r.error) || "?"), "error");
+      return;
+    }
+    if (cfg) cfg.presentation = presentation;
+    renderPresNameHints();
+  } catch (e) {
+    toast(t("common.error") + ": " + e, "error");
+  }
 }
 
-["pres-name","pres-resolution","pres-stop-kiosk"].forEach(id => {
+["pres-name", "pres-resolution", "pres-stop-kiosk"].forEach(id => {
   document.getElementById(id).addEventListener("change", savePresSettings);
 });
 
-// Präsentations-Status im Dashboard refresh
 async function refreshPresentation() {
+  if (activeTab() !== "presentation") return;
   try {
     const s = await fetch("/api/presentation/status").then(r => r.json());
-    if (document.getElementById("tab-presentation").classList.contains("active")) {
-      renderPresStatus(s);
-    }
-  } catch(e) {}
+    renderPresStatus(s);
+  } catch (e) {}
 }
 
 // ---------- Services & tools ----------
@@ -974,7 +1492,6 @@ function renderServices(d, host, sessEl) {
     const warnText = serviceWarnText(it);
     const noteText = serviceNoteText(it);
 
-    // Status-Klasse bestimmen
     let cls = "idle";
     let stateText = t("svc.idle");
 
@@ -1081,6 +1598,11 @@ function translateBackendMessage(message) {
     "Wenn der Zugangsschutz aktiv ist, müssen Benutzername und Passwort gesetzt sein.": "settings.error.auth_required_fields",
     "SSID fehlt": "wifi.error.ssid_missing",
     "name fehlt": "wifi.error.name_missing",
+    "Kein aktiver Monitor erkannt.": "layout.none",
+    "Kein Monitor für diesen Bildschirm gefunden": "screens.error.no_monitor",
+    "Unbekannter Bildschirm": "screens.error.unknown",
+    "cross_site_request": "common.error.cross_site",
+    "Kein Chromium-Fenster gefunden. Läuft der Kiosk und ist xdotool installiert?": "dash.error.no_window",
   };
   if (map[message]) return t(map[message]);
   const duplicate = String(message || "").match(
@@ -1093,19 +1615,15 @@ function translateBackendMessage(message) {
 }
 
 function renderPower(d, list, badge) {
-  // Gesamtbewertung
   const overall = d.overall || "idle";
   const badgeTxt = overall === "ok"   ? t("power.state_ok") :
                    overall === "warn" ? t("power.state_warn") :
                                         t("svc.idle");
   badge.textContent = badgeTxt;
-  badge.className = "svc-state"; // basisklasse
-  // Badge-Farbe an svc-Logik angleichen: wir nutzen die parent-.svc-Klassen-Tricks
-  // daher setzen wir den Span in einem zusätzlichen Wrapper:
-  badge.parentElement.classList.remove("power-ok","power-warn","power-idle");
+  badge.className = "svc-state";
+  badge.parentElement.classList.remove("power-ok", "power-warn", "power-idle");
   badge.parentElement.classList.add("power-" + overall);
 
-  // Einzelne Zeilen
   list.innerHTML = "";
 
   // 1) WLAN-Powersave
@@ -1124,7 +1642,7 @@ function renderPower(d, list, badge) {
       cls = "bad"; state = t("power.state_bad");
     }
     const note = wp.available
-      ? `${t("power.iface")} <code>${escape(wp.iface||"?")}</code> &middot; ${t("power.live")}: <b>${escape(wp.state||"?")}</b> &middot; ${t("power.persistent")}: <b>${wp.persistent_disabled ? t("power.off") : t("power.on")}</b>`
+      ? `${t("power.iface")} <code>${escape(wp.iface || "?")}</code> &middot; ${t("power.live")}: <b>${escape(wp.state || "?")}</b> &middot; ${t("power.persistent")}: <b>${wp.persistent_disabled ? t("power.off") : t("power.on")}</b>`
       : escape(translateBackendReason(wp.reason) || "-");
     row.className = "svc " + cls;
     row.innerHTML = `
@@ -1161,7 +1679,7 @@ function renderPower(d, list, badge) {
         <div class="svc-title"><span class="svc-label">${t("power.screen_blanking")}</span></div>
         <div class="svc-note">${note}</div>
       </div>
-      <span class="svc-state">${state}</span>
+      <span class="svc-state">${escape(state)}</span>
     `;
     list.appendChild(row);
   }
@@ -1173,7 +1691,7 @@ document.getElementById("power-force").addEventListener("click", async () => {
   if (!confirm(t("power.confirm_force"))) return;
   const btn = document.getElementById("power-force");
   const msg = document.getElementById("power-msg");
-  btn.disabled = true;
+  setBusy(btn, true);
   msg.classList.remove("error");
   msg.textContent = t("power.applying");
   try {
@@ -1193,7 +1711,7 @@ document.getElementById("power-force").addEventListener("click", async () => {
     msg.classList.add("error");
     msg.textContent = t("common.error") + ": " + e;
   } finally {
-    btn.disabled = false;
+    setBusy(btn, false);
     setTimeout(() => { msg.textContent = ""; msg.classList.remove("error"); }, 8000);
   }
 });
@@ -1204,7 +1722,11 @@ setInterval(refreshPresentation, 5000);
 setInterval(loadServices, 15000);
 setInterval(loadPower, 30000);
 setInterval(loadMaintenanceStatus, 30000);
-load();
+load().then(() => {
+  let tab = null;
+  try { tab = sessionStorage.getItem("pisp_tab"); } catch (e) {}
+  if (tab && tab !== "dashboard") activateTab(tab);
+});
 loadAuthStatus();
 loadServices();
 loadPower();

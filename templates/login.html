@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <title>PiScreenPortal &ndash; Login</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="/static/logo.png">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body class="login-body">
@@ -15,30 +17,30 @@
            class="login-logo"
            onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
       <h1 style="display:none">PiScreenPortal</h1>
-      <p class="muted login-sub">Sign in to continue</p>
+      <p class="muted login-sub" data-l="sub">Sign in to continue</p>
     </div>
 
     {% if error %}
-      <div class="login-error" role="alert">
+      <div class="login-error" role="alert" data-l="error">
         Incorrect username or password.
       </div>
     {% endif %}
 
     <label>
-      <span>Username</span>
+      <span data-l="user">Username</span>
       <input type="text" name="username" autocomplete="username"
              value="{{ username|e }}" required autofocus>
     </label>
 
     <label>
-      <span>Password</span>
+      <span data-l="pass">Password</span>
       <input type="password" name="password" autocomplete="current-password"
              required>
     </label>
 
     <input type="hidden" name="next" value="{{ next|e }}">
 
-    <button type="submit" class="btn primary btn-block">Sign in</button>
+    <button type="submit" class="btn primary btn-block" data-l="submit">Sign in</button>
 
     <p class="muted login-foot">
       &copy; Dennis Reuther 2026
@@ -46,5 +48,25 @@
   </form>
 </main>
 
+<script>
+(function () {
+  var lang = null;
+  try { lang = localStorage.getItem("pisp_lang"); } catch (e) {}
+  if (!lang) lang = /^de\b/i.test(navigator.language || "") ? "de" : "en";
+  if (lang !== "de") return;
+  var de = {
+    sub: "Zum Fortfahren anmelden",
+    error: "Benutzername oder Passwort ist falsch.",
+    user: "Benutzername",
+    pass: "Passwort",
+    submit: "Anmelden"
+  };
+  document.documentElement.lang = "de";
+  document.querySelectorAll("[data-l]").forEach(function (el) {
+    var key = el.getAttribute("data-l");
+    if (de[key]) el.textContent = de[key];
+  });
+})();
+</script>
 </body>
 </html>
