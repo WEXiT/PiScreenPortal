@@ -26,8 +26,8 @@
 
   // --------- Fake state -------------------------------------------------
   const state = {
-    version: "9",
-    remoteVersion: "9",
+    version: "10",
+    remoteVersion: "10",
     kioskRunning: true,
     restarts: {},
     cfg: {

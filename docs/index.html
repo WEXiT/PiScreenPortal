@@ -1,10 +1,14 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
 <meta charset="utf-8">
 <title>PiScreenPortal</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light dark">
+<script>
+  // Theme vor dem ersten Zeichnen setzen (Standard: hell).
+  try { document.documentElement.dataset.theme = localStorage.getItem("pisp_theme") === "dark" ? "dark" : "light"; } catch (e) {}
+</script>
 <link rel="icon" href="logo.png">
 <link rel="stylesheet" href="style.css">
 </head>
@@ -18,67 +22,97 @@
              onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
         <h1 style="display:none">PiScreenPortal</h1>
       </button>
-      <div class="status-pills" id="status-pills" aria-live="polite">
-        <span class="pill" id="pill-kiosk"><span class="dot"></span><span class="pill-text">&hellip;</span></span>
-        <span class="pill" id="pill-screens"><span class="dot"></span><span class="pill-text">&hellip;</span></span>
-        <span class="pill pill-plain" id="pill-temp"><span class="pill-text">&hellip;</span></span>
-      </div>
-      <div class="lang-switch">
-        <a class="support-link" href="https://github.com/WEXiT/PiScreenPortal"
-           target="_blank" rel="noopener noreferrer"
-           aria-label="WEXiT/PiScreenPortal on GitHub">
-          <img src="support.jpg" alt="Support PiScreenPortal with a Star on GitHub"
-               class="support-image">
-        </a>
+      <a class="support-link" href="https://github.com/WEXiT/PiScreenPortal"
+         target="_blank" rel="noopener noreferrer"
+         aria-label="Support PiScreenPortal with a Star on GitHub">
+        <img src="support.jpg" alt="Support PiScreenPortal with a Star on GitHub"
+             class="support-image">
+      </a>
+      <div class="header-tools">
         <label for="lang-select" class="sr-only" data-i18n="header.language">Language</label>
         <select id="lang-select" class="compact-select">
           <option value="en">English</option>
           <option value="de">Deutsch</option>
         </select>
+        <button type="button" class="icon-btn" id="theme-toggle" aria-label="Dark mode" title="Dark mode">
+          <svg class="icon icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+          <svg class="icon icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
         <div class="header-user" id="header-user" hidden>
-          <span class="header-user-name">
-            <span data-i18n="auth.signed_in_as">Signed in as</span>
-            <b id="header-user-name"></b>
-          </span>
-          <button class="btn btn-sm btn-logout" id="btn-logout"
-                  data-i18n="auth.logout">Log out</button>
+          <span class="header-user-name"><b id="header-user-name"></b></span>
+          <button type="button" class="icon-btn" id="btn-logout" aria-label="Log out" title="Log out">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+          </button>
         </div>
       </div>
     </div>
-    <nav class="tabs" aria-label="Sections">
-      <button class="tab active" data-tab="dashboard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 13h8V3H3zm0 8h8v-6H3zm10 0h8V11h-8zm0-18v6h8V3z"/></svg><span data-i18n="tabs.dashboard">Dashboard</span></button>
-      <button class="tab" data-tab="screens"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 4h9v7H2zm11 0h9v7h-9zM5 13h3v2h2v2H3v-2h2zm11 0h3v2h2v2h-7v-2h2z"/></svg><span data-i18n="tabs.screens">Screens</span></button>
-      <button class="tab" data-tab="presentation"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v11H3zm7 13h4l1 2H9z"/></svg><span data-i18n="tabs.presentation">Presentation</span></button>
-      <button class="tab" data-tab="wifi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20l3.5-4.2a5 5 0 0 0-7 0zm-7-8.4 2 2.4a8 8 0 0 1 10 0l2-2.4a11 11 0 0 0-14 0zM1 7.2 3 9.6a14 14 0 0 1 18 0l2-2.4a17 17 0 0 0-22 0z"/></svg><span data-i18n="tabs.wifi">Wi-Fi</span></button>
-      <button class="tab" data-tab="system"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 2h2v3h6V2h2v3h3v15H4V5h3zm-1 8v8h12v-8z"/></svg><span data-i18n="tabs.system">System</span></button>
-      <button class="tab" data-tab="diagnostics"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 2a8 8 0 0 1 6.3 12.9l5.4 5.4-1.4 1.4-5.4-5.4A8 8 0 1 1 10 2zm0 2a6 6 0 1 0 0 12 6 6 0 0 0 0-12z"/></svg><span data-i18n="tabs.diagnostics">Diagnostics</span></button>
-      <button class="tab" data-tab="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.3 2h3.4l.5 2.6 1.9.8 2.2-1.5 2.4 2.4-1.5 2.2.8 1.9 2.6.5v3.4l-2.6.5-.8 1.9 1.5 2.2-2.4 2.4-2.2-1.5-1.9.8-.5 2.6h-3.4l-.5-2.6-1.9-.8-2.2 1.5-2.4-2.4 1.5-2.2-.8-1.9L2 13.7v-3.4l2.6-.5.8-1.9-1.5-2.2 2.4-2.4 2.2 1.5 1.9-.8zM12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg><span data-i18n="tabs.settings">Settings</span></button>
-    </nav>
+    <div class="tabs-wrap">
+      <nav class="tabs" aria-label="Sections">
+        <button class="tab active" data-tab="dashboard"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span data-i18n="tabs.dashboard">Dashboard</span></button>
+        <button class="tab" data-tab="screens"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg><span data-i18n="tabs.screens">Screens</span></button>
+        <button class="tab" data-tab="presentation"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 17H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-1"/><path d="m12 15 5 6H7z"/></svg><span data-i18n="tabs.presentation">Presentation</span></button>
+        <button class="tab" data-tab="wifi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.55a11 11 0 0 1 14.08 0M1.42 9a16 16 0 0 1 21.16 0M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01"/></svg><span data-i18n="tabs.wifi">Wi-Fi</span></button>
+        <button class="tab" data-tab="system"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 9h6v6H9zM9 2v3M15 2v3M9 19v3M15 19v3M19 9h3M19 15h3M2 9h3M2 15h3"/></svg><span data-i18n="tabs.system">System</span></button>
+        <button class="tab" data-tab="diagnostics"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><span data-i18n="tabs.diagnostics">Diagnostics</span></button>
+        <button class="tab" data-tab="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg><span data-i18n="tabs.settings">Settings</span></button>
+      </nav>
+    </div>
   </div>
 </header>
 
 <main>
   <!-- DASHBOARD -->
   <section class="tab-content active" id="tab-dashboard">
-    <div class="card hero-card">
-      <div class="hero-head">
-        <div>
-          <h2 data-i18n="dash.quick">Quick actions</h2>
-          <p class="muted" data-i18n="dash.quick_desc">Control every kiosk window at once.</p>
+    <div class="card hero-card" id="hero-card">
+      <div class="hero-status">
+        <span class="hero-icon" id="hero-icon" aria-hidden="true"></span>
+        <div class="hero-text">
+          <h2 id="hero-title" data-i18n="common.loading">Loading...</h2>
+          <p id="hero-sub"></p>
+          <div class="hero-meta" id="hero-meta"></div>
         </div>
+        <button type="button" class="btn primary" id="hero-action" hidden></button>
       </div>
-      <div class="btn-row">
-        <button data-act="start" class="btn primary" data-i18n="dash.start">Start kiosk</button>
-        <button data-act="restart" class="btn" data-i18n="dash.restart">Restart</button>
-        <button data-act="reload" class="btn" data-i18n="dash.reload">Reload page</button>
-        <button data-act="stop" class="btn warn" data-i18n="dash.stop">Stop</button>
-        <span class="btn-sep" aria-hidden="true"></span>
-        <button data-act="screen-off" class="btn" data-i18n="dash.screen_off">Monitor off</button>
-        <button data-act="screen-on" class="btn" data-i18n="dash.screen_on">Monitor on</button>
+
+      <div class="action-grid">
+        <button type="button" class="action-tile primary-tile" data-act="start">
+          <span class="tile-icon"><svg class="icon" viewBox="0 0 24 24"><path d="M6 3l14 9-14 9z"/></svg></span>
+          <b data-i18n="dash.start">Start kiosk</b>
+          <small data-i18n="dash.start_desc">Open the pages on all monitors</small>
+        </button>
+        <button type="button" class="action-tile" data-act="restart">
+          <span class="tile-icon"><svg class="icon" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></span>
+          <b data-i18n="dash.restart">Restart</b>
+          <small data-i18n="dash.restart_desc">Close and reopen every page</small>
+        </button>
+        <button type="button" class="action-tile" data-act="reload">
+          <span class="tile-icon"><svg class="icon" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 15.5-6.2L21 8"/><path d="M21 3v5h-5"/></svg></span>
+          <b data-i18n="dash.reload">Reload page</b>
+          <small data-i18n="dash.reload_desc">Press F5 on every kiosk page</small>
+        </button>
+        <button type="button" class="action-tile warn-tile" data-act="stop">
+          <span class="tile-icon"><svg class="icon" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></span>
+          <b data-i18n="dash.stop">Stop</b>
+          <small data-i18n="dash.stop_desc">Close all kiosk pages</small>
+        </button>
+        <button type="button" class="action-tile" data-act="screen-off">
+          <span class="tile-icon"><svg class="icon" viewBox="0 0 24 24"><path d="M17 17H4a2 2 0 0 1-2-2V5c0-.5.2-1 .6-1.4M22 15V5a2 2 0 0 0-2-2H9M8 21h8M12 17v4M2 2l20 20"/></svg></span>
+          <b data-i18n="dash.screen_off">Monitor off</b>
+          <small data-i18n="dash.screen_off_desc">Switch the displays to standby</small>
+        </button>
+        <button type="button" class="action-tile" data-act="screen-on">
+          <span class="tile-icon"><svg class="icon" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg></span>
+          <b data-i18n="dash.screen_on">Monitor on</b>
+          <small data-i18n="dash.screen_on_desc">Wake the displays up</small>
+        </button>
       </div>
-      <div class="btn-row danger-row">
-        <button data-act="reboot" class="btn danger" data-i18n="dash.reboot">Reboot Raspberry</button>
-        <button data-act="shutdown" class="btn danger" data-i18n="dash.shutdown">Shutdown Raspberry</button>
+
+      <div class="power-row">
+        <p class="muted" data-i18n="dash.power_desc">Raspberry Pi power</p>
+        <div class="btn-row">
+          <button type="button" data-act="reboot" class="btn btn-sm danger" data-i18n="dash.reboot">Reboot Raspberry</button>
+          <button type="button" data-act="shutdown" class="btn btn-sm danger" data-i18n="dash.shutdown">Shutdown Raspberry</button>
+        </div>
       </div>
     </div>
 
@@ -128,6 +162,10 @@
 
   <!-- SCREENS -->
   <section class="tab-content" id="tab-screens">
+    <div class="page-head">
+      <h2 data-i18n="tabs.screens">Screens</h2>
+      <p data-i18n="page.screens">Which page runs on which monitor.</p>
+    </div>
     <div class="card">
       <div class="flex-between">
         <div>
@@ -168,7 +206,7 @@
           <h2 data-i18n="screens.config">Screen configuration</h2>
           <p class="muted" data-i18n="screens.hotplug_hint">For two-screen installations, assign each page to a fixed HDMI output so an unplugged display cannot take over the other page.</p>
         </div>
-        <button id="add-screen" class="btn btn-sm" data-i18n="screens.add">Add screen</button>
+        <button id="add-screen" class="btn btn-sm primary" data-i18n="screens.add">Add screen</button>
       </div>
       <div id="screens" class="screen-list"></div>
     </div>
@@ -176,12 +214,12 @@
 
   <!-- PRESENTATION -->
   <section class="tab-content" id="tab-presentation">
-    <div class="card">
+    <div class="page-head">
       <h2 data-i18n="pres.title">Presentation mode (AirPlay)</h2>
-      <p class="muted" data-i18n="pres.desc">Share your iPhone, iPad or Mac screen to the Raspberry via AirPlay. The kiosk is paused during presentation.</p>
-
-      <div id="pres-status-box" class="sysinfo" style="margin:14px 0"></div>
-
+      <p data-i18n="pres.desc">Share your iPhone, iPad or Mac screen to the Raspberry via AirPlay. The kiosk is paused during presentation.</p>
+    </div>
+    <div class="card">
+      <div id="pres-status-box" class="sysinfo" style="margin-bottom:14px"></div>
       <div class="btn-row">
         <button id="pres-start" class="btn primary" data-i18n="pres.start">Start presentation</button>
         <button id="pres-stop" class="btn warn" data-i18n="pres.stop">Stop presentation</button>
@@ -219,12 +257,16 @@
 
   <!-- WIFI -->
   <section class="tab-content" id="tab-wifi">
+    <div class="page-head">
+      <h2 data-i18n="tabs.wifi">Wi-Fi</h2>
+      <p data-i18n="page.wifi">Connect the Raspberry to a wireless network.</p>
+    </div>
     <div class="card">
       <h2 data-i18n="wifi.current">Current connection</h2>
       <div id="wifi-current" class="wifi-current" data-i18n="common.loading">Loading...</div>
       <div class="btn-row">
-        <button id="wifi-rescan" class="btn" data-i18n="wifi.rescan">Rescan networks</button>
-        <button id="wifi-reset" class="btn warn" data-i18n="wifi.reset">Restart Wi-Fi</button>
+        <button id="wifi-rescan" class="btn btn-sm" data-i18n="wifi.rescan">Rescan networks</button>
+        <button id="wifi-reset" class="btn btn-sm warn" data-i18n="wifi.reset">Restart Wi-Fi</button>
       </div>
     </div>
 
@@ -249,7 +291,7 @@
       </div>
       <label class="check"><input type="checkbox" id="wifi-add-hidden"> <span data-i18n="wifi.hidden">SSID is hidden</span></label>
       <label class="check"><input type="checkbox" id="wifi-add-autoconnect" checked> <span data-i18n="wifi.autoconnect">Auto-connect at boot</span></label>
-      <div class="btn-row">
+      <div class="btn-row" style="margin-top:12px">
         <button id="wifi-add-btn" class="btn primary" data-i18n="wifi.save">Save Wi-Fi</button>
       </div>
       <p id="wifi-add-msg" class="muted"></p>
@@ -258,6 +300,10 @@
 
   <!-- SYSTEM -->
   <section class="tab-content" id="tab-system">
+    <div class="page-head">
+      <h2 data-i18n="tabs.system">System</h2>
+      <p data-i18n="page.system">Hardware, log and running processes.</p>
+    </div>
     <div class="card">
       <h2 data-i18n="system.info">System information</h2>
       <div id="sysinfo-full" class="sysinfo" data-i18n="common.loading">Loading...</div>
@@ -274,16 +320,18 @@
 
   <!-- DIAGNOSTICS -->
   <section class="tab-content" id="tab-diagnostics">
+    <div class="page-head">
+      <h2 data-i18n="diag.title">Display diagnosis</h2>
+      <p data-i18n="diag.desc">Run this while a page is missing. It captures the detected displays, Chromium windows, and the latest kiosk log entries.</p>
+    </div>
     <div class="card">
       <div class="flex-between">
-        <h2 data-i18n="diag.title">Display diagnosis</h2>
+        <p class="muted" style="margin:0"><span data-i18n="diag.captured">Captured:</span>
+          <b id="diagnostics-time">-</b>
+        </p>
         <button id="diagnostics-refresh" class="btn btn-sm primary"
                 data-i18n="diag.run">Run analysis now</button>
       </div>
-      <p class="muted" data-i18n="diag.desc">Run this while a page is missing. It captures the detected displays, Chromium windows, and the latest kiosk log entries.</p>
-      <p class="muted"><span data-i18n="diag.captured">Captured:</span>
-        <b id="diagnostics-time">-</b>
-      </p>
       <div id="diagnostics-assignments" class="table-wrap" data-i18n="common.loading">Loading...</div>
     </div>
 
@@ -306,6 +354,10 @@
 
   <!-- SETTINGS -->
   <section class="tab-content" id="tab-settings">
+    <div class="page-head">
+      <h2 data-i18n="tabs.settings">Settings</h2>
+      <p data-i18n="page.settings">Changes are saved with the bar at the bottom.</p>
+    </div>
     <div class="dash-grid">
       <div class="card">
         <h2 data-i18n="settings.general">General</h2>
@@ -369,7 +421,7 @@
         <h2 data-i18n="boot.title">Boot display</h2>
         <p class="muted" data-i18n="boot.desc">Hide desktop icons, panel, cursor, and the early desktop flash behind a black boot cover.</p>
         <div class="btn-row" style="margin-top:14px">
-          <button id="boot-optimize" class="btn" data-i18n="boot.optimize">Hide desktop at boot</button>
+          <button id="boot-optimize" class="btn btn-sm" data-i18n="boot.optimize">Hide desktop at boot</button>
         </div>
         <p id="boot-msg" class="muted" style="margin-top:8px"></p>
       </div>
@@ -384,8 +436,8 @@
           <span id="update-status" class="svc-state">Loading...</span>
         </div>
         <div class="btn-row">
-          <button id="scan-updates" class="btn" data-i18n="updates.scan_app">Scan app updates</button>
-          <button id="git-update" class="btn primary" data-i18n="updates.update_app">Update from Git & reboot</button>
+          <button id="scan-updates" class="btn btn-sm" data-i18n="updates.scan_app">Scan app updates</button>
+          <button id="git-update" class="btn btn-sm primary" data-i18n="updates.update_app">Update from Git & reboot</button>
         </div>
         <p id="updates-msg" class="muted" style="margin-top:8px"></p>
       </div>
@@ -397,8 +449,8 @@
         </div>
         <div id="system-updates-list" class="updates-list muted">Open Settings to scan Raspberry updates.</div>
         <div class="btn-row" style="margin-top:14px">
-          <button id="system-updates-scan" class="btn" data-i18n="updates.scan_system">Scan Raspberry updates</button>
-          <button id="system-updates-install" class="btn primary" data-i18n="updates.install_system">Install Raspberry updates</button>
+          <button id="system-updates-scan" class="btn btn-sm" data-i18n="updates.scan_system">Scan Raspberry updates</button>
+          <button id="system-updates-install" class="btn btn-sm primary" data-i18n="updates.install_system">Install Raspberry updates</button>
         </div>
         <p id="system-updates-msg" class="muted" style="margin-top:8px"></p>
       </div>
@@ -406,11 +458,24 @@
   </section>
 </main>
 
-<div class="save-bar">
+<div class="save-bar" aria-live="polite">
   <div class="save-bar-inner">
-    <span id="dirty-hint" class="dirty-hint" hidden data-i18n="common.unsaved">Unsaved changes</span>
+    <span id="dirty-hint" class="dirty-hint" data-i18n="common.unsaved">Unsaved changes</span>
     <span id="msg" role="status"></span>
+    <button id="discard" class="btn ghost" data-i18n="common.discard">Discard</button>
     <button id="save" class="btn primary" data-i18n="common.save">Save and apply</button>
+  </div>
+</div>
+
+<!-- Confirmation dialog -->
+<div class="modal" id="confirm-modal" hidden>
+  <div class="modal-inner" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-text">
+    <h3 id="confirm-title"></h3>
+    <p id="confirm-text"></p>
+    <div class="btn-row">
+      <button id="confirm-cancel" class="btn" data-i18n="common.cancel">Cancel</button>
+      <button id="confirm-ok" class="btn primary">OK</button>
+    </div>
   </div>
 </div>
 

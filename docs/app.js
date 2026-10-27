@@ -51,15 +51,63 @@ function setBusy(btn, busy) {
 }
 
 // ---------- Unsaved changes ----------
+// Die Speicherleiste erscheint nur, wenn es wirklich etwas zu speichern gibt.
 function setDirty(value) {
   dirty = value;
-  document.getElementById("dirty-hint").hidden = !value;
+  document.body.classList.toggle("has-changes", value);
 }
 
 window.addEventListener("beforeunload", e => {
   if (!dirty) return;
   e.preventDefault();
   e.returnValue = "";
+});
+
+document.getElementById("discard").addEventListener("click", async () => {
+  await load();
+  toast(t("common.discarded"), "ok", 2500);
+});
+
+// ---------- Bestaetigungsdialog (statt Browser-confirm) ----------
+function askConfirm({title, text = "", ok, danger = false}) {
+  const modal = document.getElementById("confirm-modal");
+  const okBtn = document.getElementById("confirm-ok");
+  const cancelBtn = document.getElementById("confirm-cancel");
+  document.getElementById("confirm-title").textContent = title || "";
+  document.getElementById("confirm-text").textContent = text;
+  okBtn.textContent = ok || "OK";
+  okBtn.className = "btn " + (danger ? "danger-solid" : "primary");
+  modal.hidden = false;
+  okBtn.focus();
+  return new Promise(resolve => {
+    const done = value => {
+      modal.hidden = true;
+      okBtn.onclick = cancelBtn.onclick = modal.onclick = null;
+      document.removeEventListener("keydown", onKey);
+      resolve(value);
+    };
+    const onKey = e => { if (e.key === "Escape") done(false); };
+    okBtn.onclick = () => done(true);
+    cancelBtn.onclick = () => done(false);
+    modal.onclick = e => { if (e.target === modal) done(false); };
+    document.addEventListener("keydown", onKey);
+  });
+}
+
+// ---------- Theme (Standard: hell) ----------
+function applyTheme(theme) {
+  const dark = theme === "dark";
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  try { localStorage.setItem("pisp_theme", dark ? "dark" : "light"); } catch (e) {}
+  const btn = document.getElementById("theme-toggle");
+  const label = dark ? t("theme.to_light") : t("theme.to_dark");
+  btn.setAttribute("aria-label", label);
+  btn.title = label;
+  if (cfg) renderLayoutMap();
+}
+
+document.getElementById("theme-toggle").addEventListener("click", () => {
+  applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
 });
 
 // ---------- Tabs ----------
@@ -72,6 +120,13 @@ function activateTab(name) {
   document.querySelectorAll(".tab-content").forEach(x => x.classList.remove("active"));
   tab.classList.add("active");
   panel.classList.add("active");
+  // Auf dem Handy ist die Navigation scrollbar: aktiven Tab sichtbar halten.
+  const nav = tab.parentElement;
+  if (nav && nav.scrollWidth > nav.clientWidth) {
+    const nr = nav.getBoundingClientRect();
+    const tr = tab.getBoundingClientRect();
+    nav.scrollLeft += (tr.left - nr.left) - (nr.width - tr.width) / 2;
+  }
   try { sessionStorage.setItem("pisp_tab", name); } catch (e) {}
   // Direktlinks wie .../#screens (z.B. aus der README auf die Demo).
   try {
@@ -102,7 +157,8 @@ if (brandHome) brandHome.addEventListener("click", () => activateTab("dashboard"
 // Re-render on language change
 document.addEventListener("i18n-applied", () => {
   if (cfg) { renderMonitors(); renderScreens(); renderPresNameHints(); }
-  renderStatusPills();
+  applyTheme(document.documentElement.dataset.theme);
+  renderHero();
   refreshStatus();
   loadServices();
   loadPower();
@@ -256,7 +312,10 @@ function renderScreens() {
         </div>
       </div>
       <div class="screen-body">
-        <label class="span-4">${t("screens.url")}
+        <label class="span-4">
+          <span class="label-row"><span>${t("screens.url")}</span>
+            <a class="label-link" data-url-link target="_blank" rel="noopener noreferrer"
+               title="${escape(t("screens.open_url_hint"))}">${t("screens.open_url")} &#8599;</a></span>
           <input type="url" data-k="url" value="${escape(s.url || "")}" placeholder="https://example.com" spellcheck="false">
         </label>
         <label class="span-2">${t("screens.output")}
@@ -290,16 +349,23 @@ function renderScreens() {
         if (k === "output" || k === "enabled") {
           renderScreens();
         } else if (k === "name" || k === "url") {
+          if (k === "url") updateUrlLink(card, v);
           renderLayoutMap();
         }
       });
     });
-    card.querySelector("[data-screen-act='remove']").addEventListener("click", () => {
-      if (confirm(t("screens.confirm_remove"))) {
-        cfg.screens.splice(i, 1);
-        setDirty(true);
-        renderScreens();
-      }
+    updateUrlLink(card, s.url);
+    card.querySelector("[data-screen-act='remove']").addEventListener("click", async () => {
+      const ok = await askConfirm({
+        title: t("screens.remove_title", {name: s.name || t("screens.label") + " " + (i + 1)}),
+        text: t("screens.confirm_remove"),
+        ok: t("common.remove"),
+        danger: true,
+      });
+      if (!ok) return;
+      cfg.screens.splice(i, 1);
+      setDirty(true);
+      renderScreens();
     });
     card.querySelector("[data-screen-act='restart']").addEventListener("click", async ev => {
       if (dirty) { toast(t("screens.save_first"), "warn"); return; }
@@ -319,6 +385,16 @@ function renderScreens() {
     host.appendChild(card);
   });
   renderLayoutMap();
+}
+
+// "Seite öffnen" zum Prüfen der URL im eigenen Browser, nur für Web-Adressen.
+function updateUrlLink(card, url) {
+  const link = card.querySelector("[data-url-link]");
+  if (!link) return;
+  const value = String(url || "").trim();
+  const web = /^https?:\/\//i.test(value);
+  link.hidden = !web;
+  if (web) link.href = value;
 }
 
 function updateScreenBadges() {
@@ -655,10 +731,11 @@ document.querySelectorAll("[data-act]").forEach(b => {
   b.addEventListener("click", async () => {
     const act = b.dataset.act;
     const confirms = {
-      "reboot": t("dash.confirm_reboot"),
-      "shutdown": t("dash.confirm_shutdown"),
+      "reboot": {title: t("dash.reboot"), text: t("dash.confirm_reboot"), ok: t("dash.reboot"), danger: true},
+      "shutdown": {title: t("dash.shutdown"), text: t("dash.confirm_shutdown"), ok: t("dash.shutdown"), danger: true},
+      "stop": {title: t("dash.stop"), text: t("dash.confirm_stop"), ok: t("dash.stop")},
     };
-    if (confirms[act] && !confirm(confirms[act])) return;
+    if (confirms[act] && !(await askConfirm(confirms[act]))) return;
     setBusy(b, true);
     try {
       const r = await fetch("/api/action/" + act, {method: "POST"});
@@ -840,7 +917,7 @@ async function scanAppUpdates(opts = {}) {
 document.getElementById("scan-updates").addEventListener("click", () => scanAppUpdates());
 
 document.getElementById("boot-optimize").addEventListener("click", async () => {
-  if (!confirm(t("boot.confirm_optimize"))) return;
+  if (!(await askConfirm({title: t("boot.optimize"), text: t("boot.confirm_optimize"), ok: t("boot.optimize")}))) return;
   const btn = document.getElementById("boot-optimize");
   const msg = document.getElementById("boot-msg");
   setBusy(btn, true);
@@ -867,7 +944,7 @@ document.getElementById("boot-optimize").addEventListener("click", async () => {
 });
 
 document.getElementById("git-update").addEventListener("click", async () => {
-  if (!confirm(t("maint.confirm_update"))) return;
+  if (!(await askConfirm({title: t("updates.update_app"), text: t("maint.confirm_update"), ok: t("updates.update_app")}))) return;
   const btn = document.getElementById("git-update");
   const msg = document.getElementById("updates-msg");
   setBusy(btn, true);
@@ -1019,7 +1096,7 @@ document.getElementById("system-updates-scan")
   .addEventListener("click", () => scanSystemUpdates());
 
 document.getElementById("system-updates-install").addEventListener("click", async () => {
-  if (!confirm(t("updates.confirm_install_system"))) return;
+  if (!(await askConfirm({title: t("updates.install_system"), text: t("updates.confirm_install_system"), ok: t("updates.install_system")}))) return;
   const btn = document.getElementById("system-updates-install");
   const msg = document.getElementById("system-updates-msg");
   btn.disabled = true;
@@ -1107,38 +1184,92 @@ function renderScreenStatus(procs) {
 }
 
 let lastSystem = null;
+let statusLoaded = false;
 
-function renderStatusPills() {
-  const kiosk = document.getElementById("pill-kiosk");
-  const screens = document.getElementById("pill-screens");
-  const temp = document.getElementById("pill-temp");
-  const setPill = (el, cls, text) => {
-    el.className = "pill " + cls + (el.id === "pill-temp" ? " pill-plain" : "");
-    el.querySelector(".pill-text").textContent = text;
-  };
+const HERO_ICONS = {
+  ok: '<svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>',
+  warn: '<svg class="icon" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>',
+  stopped: '<svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M10 15V9M14 15V9"/></svg>',
+  cast: '<svg class="icon" viewBox="0 0 24 24"><path d="M5 17H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-1"/><path d="m12 15 5 6H7z"/></svg>',
+};
+
+let heroAction = null;
+
+// Zusammenfassung oben im Dashboard: ein Satz, der sagt, ob alles laeuft,
+// plus genau eine passende Aktion, wenn etwas zu tun ist.
+function renderHero() {
+  const card = document.getElementById("hero-card");
+  if (!card) return;
+  const icon = document.getElementById("hero-icon");
+  const title = document.getElementById("hero-title");
+  const sub = document.getElementById("hero-sub");
+  const meta = document.getElementById("hero-meta");
+  const action = document.getElementById("hero-action");
+  if (!cfg || !statusLoaded) return;
+
+  const enabled = cfg.screens.map((s, i) => ({s, i})).filter(x => x.s.enabled);
+  const live = enabled.filter(x => {
+    const p = lastProcs[String(x.i)];
+    return p && p.running && p.window_visible !== false;
+  }).length;
+  const activeMonitors = monitors.filter(m => m.active).length;
+
+  let state, heading, text;
+  heroAction = null;
   if (lastKiosk.presentation_running) {
-    setPill(kiosk, "warn", t("pill.presentation"));
-  } else if (lastKiosk.desired_running) {
-    setPill(kiosk, "ok", t("pill.kiosk_on"));
+    state = "warn"; icon.innerHTML = HERO_ICONS.cast;
+    heading = t("hero.presentation");
+    text = t("hero.presentation_sub");
+    heroAction = {label: t("hero.open_presentation"), run: () => activateTab("presentation")};
+  } else if (!lastKiosk.desired_running) {
+    state = ""; icon.innerHTML = HERO_ICONS.stopped;
+    heading = t("hero.stopped");
+    text = t("hero.stopped_sub");
+    heroAction = {label: t("dash.start"), act: "start"};
+  } else if (!enabled.length) {
+    state = "warn"; icon.innerHTML = HERO_ICONS.warn;
+    heading = t("hero.no_screens");
+    text = t("hero.no_screens_sub");
+    heroAction = {label: t("screens.add"), run: () => activateTab("screens")};
+  } else if (live === enabled.length) {
+    state = "ok"; icon.innerHTML = HERO_ICONS.ok;
+    heading = t("hero.all_ok");
+    text = t("hero.all_ok_sub", {live, total: enabled.length});
   } else {
-    setPill(kiosk, "warn", t("pill.kiosk_off"));
+    state = live ? "warn" : "bad"; icon.innerHTML = HERO_ICONS.warn;
+    heading = t("hero.attention", {count: enabled.length - live});
+    text = t("hero.attention_sub", {live, total: enabled.length});
+    heroAction = {label: t("hero.open_screens"), run: () => activateTab("screens")};
   }
-  if (cfg) {
-    const enabled = cfg.screens.map((s, i) => ({s, i})).filter(x => x.s.enabled);
-    const live = enabled.filter(x => {
-      const p = lastProcs[String(x.i)];
-      return p && p.running && p.window_visible !== false;
-    }).length;
-    const cls = !enabled.length ? "" : live === enabled.length ? "ok" : live ? "warn" : "bad";
-    setPill(screens, cls, t("pill.screens", {live, total: enabled.length}));
-  }
+  card.className = "card hero-card " + state;
+  title.textContent = heading;
+  sub.textContent = text;
+
+  const pills = [
+    {cls: live === enabled.length && enabled.length ? "ok" : live ? "warn" : "", text: t("pill.screens", {live, total: enabled.length})},
+    {cls: "", text: t("hero.monitors", {count: activeMonitors})},
+  ];
   if (lastSystem && lastSystem.cpu_temp && lastSystem.cpu_temp !== "?") {
-    setPill(temp, tempClass(lastSystem.cpu_temp), lastSystem.cpu_temp);
-    temp.hidden = false;
-  } else {
-    temp.hidden = true;
+    pills.push({cls: tempClass(lastSystem.cpu_temp), text: lastSystem.cpu_temp});
   }
+  if (lastSystem && lastSystem.ip && lastSystem.ip !== "?") {
+    pills.push({cls: "", text: lastSystem.ip});
+  }
+  meta.innerHTML = pills.map(p =>
+    `<span class="pill ${p.cls}"><span class="dot"></span>${escape(p.text)}</span>`).join("");
+
+  action.hidden = !heroAction;
+  if (heroAction) action.textContent = heroAction.label;
 }
+
+document.getElementById("hero-action").addEventListener("click", () => {
+  if (!heroAction) return;
+  if (heroAction.run) heroAction.run();
+  else if (heroAction.act) {
+    const tile = document.querySelector(`.action-tile[data-act="${heroAction.act}"]`);
+    if (tile) tile.click();
+  }
+});
 
 async function refreshStatus() {
   try {
@@ -1152,8 +1283,11 @@ async function refreshStatus() {
     updateLiveMonitors(s.monitors || []);
     updateScreenBadges();
     if (activeTab() === "screens") renderLayoutMap();
-    renderStatusPills();
-    if (s.version) document.getElementById("app-version").textContent = "v" + s.version;
+    statusLoaded = true;
+    renderHero();
+    // VERSION ist eine fortlaufende Build-Nummer (Updater-Vergleich), nicht
+    // die Release-Version auf GitHub.
+    if (s.version) document.getElementById("app-version").textContent = "· build " + s.version;
     document.getElementById("status").textContent = JSON.stringify(s.processes, null, 2);
     if (activeTab() === "system") refreshLogs();
   } catch (e) {}
@@ -1257,7 +1391,7 @@ async function loadWifi() {
           <button class="btn btn-sm">${t("common.remove")}</button>
         `;
         div.querySelector("button").addEventListener("click", async () => {
-          if (!confirm(t("wifi.confirm_forget") + ' "' + p.name + '"')) return;
+          if (!(await askConfirm({title: t("wifi.confirm_forget"), text: p.name, ok: t("common.remove"), danger: true}))) return;
           const r = await postJson("/api/wifi/forget", {name: p.name});
           if (!r.ok) toast(t("common.error") + ": " + (r.message || translateBackendMessage(r.error) || "?"), "error");
           loadWifi();
@@ -1326,7 +1460,7 @@ document.getElementById("wifi-add-btn").addEventListener("click", async () => {
 
 document.getElementById("wifi-rescan").addEventListener("click", loadWifi);
 document.getElementById("wifi-reset").addEventListener("click", async () => {
-  if (!confirm(t("wifi.confirm_reset"))) return;
+  if (!(await askConfirm({title: t("wifi.reset"), text: t("wifi.confirm_reset"), ok: t("wifi.reset")}))) return;
   const r = await postJson("/api/wifi/reset");
   if (!r.ok) toast(t("common.error") + ": " + (r.message || "?"), "error");
   setTimeout(loadWifi, 3000);
@@ -1693,7 +1827,7 @@ function renderPower(d, list, badge) {
 document.getElementById("power-refresh").addEventListener("click", loadPower);
 
 document.getElementById("power-force").addEventListener("click", async () => {
-  if (!confirm(t("power.confirm_force"))) return;
+  if (!(await askConfirm({title: t("power.force"), text: t("power.confirm_force"), ok: t("power.force")}))) return;
   const btn = document.getElementById("power-force");
   const msg = document.getElementById("power-msg");
   setBusy(btn, true);
