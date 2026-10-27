@@ -73,6 +73,11 @@ function activateTab(name) {
   tab.classList.add("active");
   panel.classList.add("active");
   try { sessionStorage.setItem("pisp_tab", name); } catch (e) {}
+  // Direktlinks wie .../#screens (z.B. aus der README auf die Demo).
+  try {
+    history.replaceState(null, "", name === "dashboard"
+      ? location.pathname + location.search : "#" + name);
+  } catch (e) {}
 
   if (name === "wifi") loadWifi();
   if (name === "presentation") loadPresentation();
@@ -1723,9 +1728,15 @@ setInterval(loadServices, 15000);
 setInterval(loadPower, 30000);
 setInterval(loadMaintenanceStatus, 30000);
 load().then(() => {
-  let tab = null;
-  try { tab = sessionStorage.getItem("pisp_tab"); } catch (e) {}
+  let tab = location.hash.replace(/^#/, "");
+  if (!tab) {
+    try { tab = sessionStorage.getItem("pisp_tab"); } catch (e) {}
+  }
   if (tab && tab !== "dashboard") activateTab(tab);
+});
+window.addEventListener("hashchange", () => {
+  const tab = location.hash.replace(/^#/, "");
+  if (tab && tab !== activeTab()) activateTab(tab);
 });
 loadAuthStatus();
 loadServices();
