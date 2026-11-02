@@ -29,6 +29,7 @@ Raspberry Pi · Digital Signage · Kiosk Mode · Multi Monitor · AirPlay · Web
 ## Features
 
 - **Multi-screen kiosk** – one URL per HDMI output, with rotation, resolution, zoom, auto-reload and cursor-hiding
+- **Playlist per screen** – rotate several pages on one monitor, each with its own display time; edited in the web interface, switched in the same window without flicker
 - **Easy two-monitor setup** – live monitor map, *Identify monitors* (shows a big number on every display), *Assign left to right*, *Swap screens*, and warnings for double-assigned or unplugged outputs
 - **Gentle apply** – saving only restarts the screens you changed; the other monitor keeps running. Each screen can also be restarted on its own
 - **Hotplug-safe** – an unplugged display never takes over the other page; reconnected displays get their last working mode back
@@ -201,6 +202,34 @@ on the monitor that remained connected keeps running. Confirmed display modes
 are cached by EDID and output, so a reconnected monitor can reuse its last
 working mode. If that mode is no longer advertised or accepted, the layout
 automatically falls back to `xrandr --auto`.
+
+### Playlist (several pages on one screen)
+
+1. Open **Screens** and tick **Playlist** on the screen card. The current URL
+   becomes page 1.
+2. Add pages with **+ Add page**, set how long each one stays visible
+   (5 seconds to 24 hours) and reorder them with the arrows.
+3. **Save and apply** – this screen restarts at page 1; other screens keep
+   running. Unticking *Playlist* returns to the single URL and keeps the list.
+
+The pages switch inside the running Chromium window (no restart, no black
+flash), so logins and cookies stay intact. The dashboard and the screen card
+show the current page and the time until the next switch.
+
+How it stays reliable around the clock:
+
+- A page that cannot be reached shows Chromium's error page only until the
+  next switch; the playlist keeps running.
+- If Chromium cannot be controlled (crashed or hanging), PiScreenPortal
+  restarts just that screen at the next page. The normal crash watchdog
+  stays active as well.
+- Problems are logged once when they start and once when they are resolved,
+  not on every switch.
+
+Technical note: only screens with an active playlist of two or more pages
+start Chromium with `--remote-debugging-port=0`. Chromium then picks a free
+port on `127.0.0.1` (never reachable from the network) and PiScreenPortal
+reads it from the screen's profile folder (`DevToolsActivePort`).
 
 ---
 

@@ -722,6 +722,31 @@ code { background: var(--surface-3); padding: 1px 6px; border-radius: 6px; font-
 .field-error { color: var(--danger); font-size: 12.5px; margin: -4px 0 6px; font-weight: 500; }
 .field-hint { color: var(--muted); font-size: 12px; font-weight: 400; }
 
+.playlist { margin: 4px 0 6px; }
+.playlist .field-hint, .playlist .field-error { margin: 6px 0 0; }
+.pl-head, .pl-row {
+  display: grid; grid-template-columns: 24px minmax(0, 1fr) 130px 112px;
+  gap: 8px; align-items: center;
+}
+.pl-head { font-size: 12px; font-weight: 600; color: var(--muted); margin: 4px 0 0; }
+.pl-head span:first-child { grid-column: 2; }
+.pl-head span:last-child { grid-column: 3 / -1; white-space: nowrap; }
+.pl-items { margin: 2px 0 8px; }
+.pl-row { margin: 6px 0; }
+.pl-row input { margin-top: 0; }
+.pl-num { font-size: 12.5px; font-weight: 600; color: var(--muted); text-align: right; }
+.pl-dur { display: flex; align-items: center; gap: 6px; }
+.pl-unit { font-size: 12.5px; color: var(--muted); }
+.pl-actions { display: flex; gap: 4px; }
+.pl-actions .btn { min-width: 34px; padding-left: 8px; padding-right: 8px; }
+@media (max-width: 640px) {
+  .pl-head { display: none; }
+  .pl-row { grid-template-columns: 24px minmax(0, 1fr) auto; row-gap: 6px; margin: 10px 0; }
+  .pl-url { grid-column: 2 / -1; }
+  .pl-dur { grid-column: 2; }
+  .pl-actions { grid-column: 3; }
+}
+
 /* ------ WiFi ------ */
 .wifi-current { margin-bottom: 14px; }
 .wifi-list { display: grid; gap: 8px; }
