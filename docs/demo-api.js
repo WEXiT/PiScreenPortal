@@ -262,6 +262,11 @@
         dpms_enabled: p.dpms_enabled,
         dpms_reported: true,
         blanking_off: blanking_ok,
+        persistent: {
+          configured: blanking_ok,
+          file: "/home/pi/.config/lxsession/LXDE-pi/autostart",
+          missing: blanking_ok ? [] : ["@xset s off", "@xset -dpms", "@xset s noblank"],
+        },
       },
     };
   }

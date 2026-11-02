@@ -99,6 +99,17 @@ Then open `http://localhost:8765`.
 - Raspberry Pi OS 64-bit (Bookworm or Trixie), *with desktop*
 - One or more HDMI monitors
 
+### Display session: X11 vs Wayland
+
+Raspberry Pi OS uses **Wayland** by default on the Pi 4/5. PiScreenPortal controls the displays with X11 tools (`xrandr`, `xset`, `xdotool`, `wmctrl`, `unclutter`), so run the Pi in an **X11** session:
+
+```bash
+sudo raspi-config   # Advanced Options → Wayland → X11, then reboot
+echo $XDG_SESSION_TYPE   # should print "x11"
+```
+
+The installer and *Energy → Force 24/7 mode now* always write the screen-blanking settings (`@xset s off`, `@xset -dpms`, `@xset s noblank`) to `~/.config/lxsession/LXDE-pi/autostart`, even while Wayland is active. They take effect at the first X11 login. If that file does not exist yet, it is created as a copy of `/etc/xdg/lxsession/LXDE-pi/autostart`, because lxsession stops reading the system-wide file once a user file exists. The *Energy* card shows whether the persistent setting is in place.
+
 ## Installation
 
 ### Automatic (via GitHub)
@@ -281,6 +292,7 @@ after the next successful monitor query.
 | A page is missing on one monitor | *Diagnostics → Run analysis now* while the page is missing; it shows outputs, Chromium windows and the latest log |
 | AirPlay device not visible | `systemctl status avahi-daemon` must be running; check firewall |
 | Keyring "unlock" dialog on the screen | *Settings → General → Disable GNOME keyring* (on by default), then reboot once. The installer moves old keyrings to `~/.local/share/keyrings.piscreenportal-backup-*` instead of deleting them. |
+| Screen goes black after a few minutes | Check *Energy* in the web interface. On Wayland `xset` has no effect: switch to X11 (see *Display session: X11 vs Wayland*), then click *Force 24/7 mode now* and reboot. |
 | Lost password | Edit `~/PiScreenPortal/config.json` → set `auth.enabled` to `false`, restart service |
 
 ## Uninstall
