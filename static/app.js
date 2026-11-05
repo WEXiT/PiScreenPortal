@@ -280,9 +280,117 @@ function screenStatus(i) {
   if (lastKiosk.presentation_running) return {cls: "warn", text: t("screens.status_presentation")};
   if (!p || !p.running) return {cls: "warn", text: t("screen.inactive")};
   const output = p.output || s.output || "";
-  if (p.window_visible === true) return {cls: "ok", text: t("screens.status_live", {output})};
+  const pl = playlistStatusText(p);
   if (p.window_visible === false) return {cls: "bad", text: t("screens.status_hidden", {output})};
-  return {cls: "ok", text: t("screens.status_running", {output})};
+  const text = t(p.window_visible === true ? "screens.status_live" : "screens.status_running", {output});
+  if (p.playlist && p.playlist.error) return {cls: "warn", text: text + " · " + pl};
+  return {cls: "ok", text: pl ? text + " · " + pl : text};
+}
+
+function playlistStatusText(p) {
+  const pl = p && p.playlist;
+  if (!pl || !pl.count) return "";
+  const pos = t("screens.playlist_pos", {index: pl.index + 1, count: pl.count});
+  if (pl.error) return pos + " · " + t("screens.playlist_error");
+  return pos + " · " + t("screens.playlist_next", {seconds: pl.seconds_left});
+}
+
+function displayedUrl(s, i) {
+  const p = lastProcs[String(i)];
+  if (p && p.running && p.playlist && p.playlist.url) return p.playlist.url;
+  const pl = s.playlist;
+  if (pl && pl.enabled) {
+    const first = (pl.items || []).find(item => String(item.url || "").trim());
+    if (first) return first.url;
+  }
+  return s.url || "";
+}
+
+const PLAYLIST_DEFAULT_DURATION = 60;
+
+function screenPlaylist(s) {
+  if (!s.playlist || typeof s.playlist !== "object") s.playlist = {enabled: false, items: []};
+  if (!Array.isArray(s.playlist.items)) s.playlist.items = [];
+  return s.playlist;
+}
+
+function playlistEditor(s) {
+  const pl = screenPlaylist(s);
+  const rows = pl.items.map((item, j) => `
+    <div class="pl-row" data-pl-row="${j}">
+      <span class="pl-num">${j + 1}</span>
+      <input type="url" class="pl-url" data-pl-k="url" value="${escape(item.url || "")}"
+             placeholder="https://example.com" spellcheck="false" aria-label="${escape(t("screens.url"))} ${j + 1}">
+      <span class="pl-dur">
+        <input type="number" min="5" max="86400" step="1" data-pl-k="duration"
+               value="${escape(String(item.duration || PLAYLIST_DEFAULT_DURATION))}"
+               aria-label="${escape(t("screens.playlist_duration"))}">
+        <span class="pl-unit">s</span>
+      </span>
+      <span class="pl-actions">
+        <button type="button" class="btn btn-sm ghost" data-pl-act="up" ${j === 0 ? "disabled" : ""}
+                title="${escape(t("screens.playlist_up"))}" aria-label="${escape(t("screens.playlist_up"))}">&uarr;</button>
+        <button type="button" class="btn btn-sm ghost" data-pl-act="down" ${j === pl.items.length - 1 ? "disabled" : ""}
+                title="${escape(t("screens.playlist_down"))}" aria-label="${escape(t("screens.playlist_down"))}">&darr;</button>
+        <button type="button" class="btn btn-sm ghost danger" data-pl-act="remove"
+                title="${escape(t("common.remove"))}" aria-label="${escape(t("common.remove"))}">&times;</button>
+      </span>
+    </div>`).join("");
+  const valid = pl.items.filter(item => String(item.url || "").trim()).length;
+  return `
+    <div class="playlist span-4">
+      <label class="check"><input type="checkbox" data-pl-toggle ${pl.enabled ? "checked" : ""}> ${t("screens.playlist")}</label>
+      ${pl.enabled ? `
+        <div class="pl-head"><span>${t("screens.url")}</span><span>${t("screens.playlist_duration")}</span></div>
+        <div class="pl-items">${rows}</div>
+        <button type="button" class="btn btn-sm ghost" data-pl-act="add">+ ${t("screens.playlist_add")}</button>
+        ${valid < 2 ? `<p class="field-error">${escape(t("screens.playlist_min"))}</p>` : ""}
+        <p class="field-hint">${escape(t("screens.playlist_hint"))}</p>` : ""}
+    </div>`;
+}
+
+function bindPlaylistEditor(card, i) {
+  const s = cfg.screens[i];
+  const pl = screenPlaylist(s);
+  const toggle = card.querySelector("[data-pl-toggle]");
+  toggle.addEventListener("change", () => {
+    pl.enabled = toggle.checked;
+    if (pl.enabled && !pl.items.length) {
+      pl.items.push({url: s.url || "", duration: PLAYLIST_DEFAULT_DURATION});
+      pl.items.push({url: "", duration: PLAYLIST_DEFAULT_DURATION});
+    }
+    setDirty(true);
+    renderScreens();
+  });
+  card.querySelectorAll("[data-pl-row]").forEach(row => {
+    const j = Number(row.dataset.plRow);
+    row.querySelectorAll("[data-pl-k]").forEach(el => {
+      el.addEventListener("input", () => {
+        const k = el.dataset.plK;
+        pl.items[j][k] = k === "duration" ? (el.value === "" ? null : Number(el.value)) : el.value;
+        setDirty(true);
+        if (k === "url") renderLayoutMap();
+      });
+    });
+    row.querySelectorAll("[data-pl-act]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const act = btn.dataset.plAct;
+        const to = act === "up" ? j - 1 : j + 1;
+        if (act === "remove") pl.items.splice(j, 1);
+        else if (to >= 0 && to < pl.items.length) [pl.items[j], pl.items[to]] = [pl.items[to], pl.items[j]];
+        setDirty(true);
+        renderScreens();
+      });
+    });
+  });
+  const add = card.querySelector(".playlist > [data-pl-act='add']");
+  if (add) add.addEventListener("click", () => {
+    pl.items.push({url: "", duration: PLAYLIST_DEFAULT_DURATION});
+    setDirty(true);
+    renderScreens();
+    const urls = document.querySelectorAll(`#screens .screen-card[data-index="${i}"] .pl-url`);
+    if (urls.length) urls[urls.length - 1].focus();
+  });
 }
 
 function renderScreens() {
@@ -312,12 +420,13 @@ function renderScreens() {
         </div>
       </div>
       <div class="screen-body">
-        <label class="span-4">
+        <label class="span-4" ${screenPlaylist(s).enabled ? "hidden" : ""}>
           <span class="label-row"><span>${t("screens.url")}</span>
             <a class="label-link" data-url-link target="_blank" rel="noopener noreferrer"
                title="${escape(t("screens.open_url_hint"))}">${t("screens.open_url")} &#8599;</a></span>
           <input type="url" data-k="url" value="${escape(s.url || "")}" placeholder="https://example.com" spellcheck="false">
         </label>
+        ${playlistEditor(s)}
         <label class="span-2">${t("screens.output")}
           <select data-k="output" class="${dupe || missing ? "invalid" : ""}">${outputOptions(s.output)}</select>
         </label>
@@ -355,6 +464,7 @@ function renderScreens() {
       });
     });
     updateUrlLink(card, s.url);
+    bindPlaylistEditor(card, i);
     card.querySelector("[data-screen-act='remove']").addEventListener("click", async () => {
       const ok = await askConfirm({
         title: t("screens.remove_title", {name: s.name || t("screens.label") + " " + (i + 1)}),
@@ -493,7 +603,7 @@ function renderLayoutMap() {
       const page = pages.length
         ? pages.map(x => `${x.i + 1} &middot; ${escape(x.s.name || t("screens.label") + " " + (x.i + 1))}`).join("<br>")
         : `<span class="muted">${t("layout.no_page")}</span>`;
-      const url = pages.length ? escape(pages[0].s.url || "") : "";
+      const url = pages.length ? escape(displayedUrl(pages[0].s, pages[0].i)) : "";
       el.innerHTML = `
         <div class="mon-head"><span class="mon-num">${n + 1}</span><span class="mon-name">${escape(b.m.name)}</span></div>
         <div class="mon-page">${page}</div>
@@ -643,7 +753,7 @@ document.getElementById("add-screen").addEventListener("click", () => {
   cfg.screens.push({
     name: t("screens.new"), enabled: true, url: "https://example.com",
     output: "", resolution: "", rotation: "normal", hide_cursor: true,
-    reload_interval: 0, zoom: 1.0,
+    reload_interval: 0, zoom: 1.0, playlist: {enabled: false, items: []},
   });
   setDirty(true);
   renderScreens();
@@ -1178,6 +1288,8 @@ function renderScreenStatus(procs) {
       value = t("screen.running_unverified", {pid: p.pid, output});
       cls = "ok";
     }
+    const pl = running ? playlistStatusText(p) : "";
+    if (pl) value += " · " + pl;
     html += tile(`${i + 1} · ${s.name || t("screens.label") + " " + (i + 1)}`, value, cls);
   });
   el.innerHTML = html;

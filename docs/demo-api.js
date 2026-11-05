@@ -56,7 +56,12 @@
           hide_cursor: true, reload_interval: 300, zoom: 1.0 },
         { name: "Meeting room", enabled: true, url: "https://grafana.com",
           output: "HDMI-A-2", resolution: "1920x1080", rotation: "normal",
-          hide_cursor: true, reload_interval: 0, zoom: 1.1 },
+          hide_cursor: true, reload_interval: 0, zoom: 1.1,
+          playlist: { enabled: true, items: [
+            { url: "https://grafana.com", duration: 60 },
+            { url: "https://www.raspberrypi.com/news/", duration: 30 },
+            { url: "https://example.com/menu", duration: 20 },
+          ] } },
         { name: "Signage (portrait)", enabled: false, url: "https://example.com/signage",
           output: "", resolution: "", rotation: "right",
           hide_cursor: true, reload_interval: 60, zoom: 1.0 },
@@ -151,6 +156,18 @@
         output,
         window_visible: true,
       };
+      const items = activePlaylist(s);
+      if (items.length >= 2) {
+        // Derive the position from the clock so the demo appears to rotate.
+        const total = items.reduce((sum, item) => sum + item.duration, 0);
+        let t = Math.floor(Date.now() / 1000) % total;
+        let index = 0;
+        while (t >= items[index].duration) { t -= items[index].duration; index += 1; }
+        processes[String(i)].playlist = {
+          index, count: items.length, url: items[index].url,
+          seconds_left: items[index].duration - t, error: "",
+        };
+      }
     });
     return processes;
   }
@@ -208,6 +225,23 @@
     return cfg;
   }
 
+  function normalizePlaylist(pl) {
+    const src = pl && typeof pl === "object" ? pl : {};
+    const items = (Array.isArray(src.items) ? src.items : [])
+      .filter(item => item && String(item.url || "").trim())
+      .slice(0, 50)
+      .map(item => ({
+        url: String(item.url).trim(),
+        duration: Math.min(86400, Math.max(5, parseInt(item.duration, 10) || 60)),
+      }));
+    return { enabled: !!src.enabled, items };
+  }
+
+  function activePlaylist(s) {
+    const pl = normalizePlaylist(s.playlist);
+    return pl.enabled ? pl.items : [];
+  }
+
   function storeConfig(body) {
     if (!body || typeof body !== "object" || !Array.isArray(body.screens)) {
       return "Ungültige Config";
@@ -237,6 +271,7 @@
       hide_cursor: s.hide_cursor !== false,
       reload_interval: Math.max(0, parseInt(s.reload_interval, 10) || 0),
       zoom: Math.min(5, Math.max(0.25, Number(s.zoom) || 1)),
+      playlist: normalizePlaylist(s.playlist),
     }));
     state.cfg = next;
     applyScreenModes();

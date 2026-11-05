@@ -5,8 +5,10 @@ auf einem Raspberry Pi mit mehreren Monitoren.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
+import http.client
 import io
 import json
 import os
@@ -288,7 +290,43 @@ def normalize_screen(screen, idx: int = 0) -> dict:
     out["reload_interval"] = _bounded_number(
         src.get("reload_interval"), 0, 0, 7 * 24 * 3600, cast=int)
     out["zoom"] = round(_bounded_number(src.get("zoom"), 1.0, 0.25, 5.0), 2)
+    out["playlist"] = normalize_playlist(src.get("playlist"))
     return out
+
+
+PLAYLIST_MAX_ITEMS = 50
+PLAYLIST_MIN_DURATION = 5
+PLAYLIST_MAX_DURATION = 24 * 3600
+PLAYLIST_DEFAULT_DURATION = 60
+
+
+def normalize_playlist(value) -> dict:
+    src = value if isinstance(value, dict) else {}
+    raw_items = src.get("items")
+    items = []
+    for item in raw_items if isinstance(raw_items, list) else []:
+        if len(items) >= PLAYLIST_MAX_ITEMS:
+            break
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url:
+            continue
+        items.append({
+            "url": normalize_url(url),
+            "duration": _bounded_number(
+                item.get("duration"), PLAYLIST_DEFAULT_DURATION,
+                PLAYLIST_MIN_DURATION, PLAYLIST_MAX_DURATION, cast=int),
+        })
+    return {"enabled": bool(src.get("enabled", False)), "items": items}
+
+
+def active_playlist(screen) -> list[dict]:
+    """Items of an enabled playlist; [] means the screen shows its single URL."""
+    playlist = screen.get("playlist") if isinstance(screen, dict) else None
+    if not isinstance(playlist, dict) or not playlist.get("enabled"):
+        return []
+    return normalize_playlist(playlist)["items"]
 
 
 def normalize_config(cfg: dict) -> dict:
@@ -2572,17 +2610,193 @@ class PresentationManager:
 
 
 # ---------------------- Kiosk-Manager ---------------------- #
+# Playlist screens run Chromium with --remote-debugging-port=0: Chromium binds
+# a free port on 127.0.0.1 and writes it to <profile>/DevToolsActivePort. This
+# avoids port clashes and ties the control channel to the screen's own profile.
+DEVTOOLS_PORT_FILE = "DevToolsActivePort"
+CDP_TIMEOUT_SECONDS = 5.0
+CDP_MAX_MESSAGE_BYTES = 16 * 1024 * 1024
+_WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+
+def _devtools_port(profile_dir) -> int | None:
+    try:
+        text = (Path(profile_dir) / DEVTOOLS_PORT_FILE).read_text(
+            encoding="utf-8", errors="ignore")
+        port = int(text.splitlines()[0].strip())
+    except (OSError, IndexError, ValueError):
+        return None
+    return port if 0 < port < 65536 else None
+
+
+def _cdp_page_ws_path(port: int, timeout: float) -> str | None:
+    """Uses http.client rather than urllib so proxy environment variables
+    cannot redirect requests to localhost."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    try:
+        conn.request("GET", "/json/list")
+        resp = conn.getresponse()
+        if resp.status != 200:
+            return None
+        targets = json.loads(resp.read(1_000_000).decode("utf-8", "ignore"))
+    finally:
+        conn.close()
+    for target in targets if isinstance(targets, list) else []:
+        if not isinstance(target, dict) or target.get("type") != "page":
+            continue
+        if str(target.get("url") or "").startswith("devtools://"):
+            continue
+        path = urlparse(str(target.get("webSocketDebuggerUrl") or "")).path
+        if path.startswith("/devtools/"):
+            return path
+    return None
+
+
+class _WebSocket:
+    """Minimal RFC 6455 client for single CDP request/response exchanges."""
+
+    def __init__(self, sock: socket.socket):
+        self.sock = sock
+        self.buf = b""
+
+    def _recv_exact(self, n: int) -> bytes:
+        while len(self.buf) < n:
+            chunk = self.sock.recv(max(4096, n - len(self.buf)))
+            if not chunk:
+                raise ConnectionError("WebSocket geschlossen")
+            self.buf += chunk
+        data, self.buf = self.buf[:n], self.buf[n:]
+        return data
+
+    def handshake(self, port: int, path: str) -> None:
+        key = base64.b64encode(os.urandom(16)).decode()
+        self.sock.sendall((
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{port}\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {key}\r\n"
+            "Sec-WebSocket-Version: 13\r\n\r\n").encode())
+        while b"\r\n\r\n" not in self.buf:
+            if len(self.buf) > 16384:
+                raise ValueError("WebSocket-Handshake zu lang")
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise ConnectionError("WebSocket-Handshake abgebrochen")
+            self.buf += chunk
+        head, _, self.buf = self.buf.partition(b"\r\n\r\n")
+        lines = head.decode("latin-1").split("\r\n")
+        if len(lines[0].split()) < 2 or lines[0].split()[1] != "101":
+            raise ValueError(f"WebSocket-Handshake abgelehnt: {lines[0][:80]}")
+        expected = base64.b64encode(
+            hashlib.sha1((key + _WS_GUID).encode()).digest()).decode()
+        headers = {}
+        for line in lines[1:]:
+            name, sep, value = line.partition(":")
+            if sep:
+                headers[name.strip().lower()] = value.strip()
+        if headers.get("sec-websocket-accept") != expected:
+            raise ValueError("WebSocket-Handshake ungueltig")
+
+    def _send_frame(self, opcode: int, payload: bytes) -> None:
+        header = bytearray([0x80 | opcode])
+        n = len(payload)
+        if n < 126:
+            header.append(0x80 | n)
+        elif n < 65536:
+            header.append(0x80 | 126)
+            header += struct.pack("!H", n)
+        else:
+            header.append(0x80 | 127)
+            header += struct.pack("!Q", n)
+        mask = os.urandom(4)
+        header += mask
+        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        self.sock.sendall(bytes(header) + masked)
+
+    def send_text(self, text: str) -> None:
+        self._send_frame(0x1, text.encode("utf-8"))
+
+    def recv_text(self) -> str:
+        parts = []
+        size = 0
+        while True:
+            b1, b2 = self._recv_exact(2)
+            opcode = b1 & 0x0F
+            n = b2 & 0x7F
+            if n == 126:
+                n = struct.unpack("!H", self._recv_exact(2))[0]
+            elif n == 127:
+                n = struct.unpack("!Q", self._recv_exact(8))[0]
+            if size + n > CDP_MAX_MESSAGE_BYTES:
+                raise ValueError("CDP-Nachricht zu gross")
+            mask = self._recv_exact(4) if b2 & 0x80 else b""
+            payload = self._recv_exact(n) if n else b""
+            if mask:
+                payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+            if opcode == 0x8:
+                raise ConnectionError("WebSocket vom Browser geschlossen")
+            if opcode == 0x9:
+                self._send_frame(0xA, payload)
+                continue
+            if opcode == 0xA:
+                continue
+            parts.append(payload)
+            size += n
+            if b1 & 0x80:
+                return b"".join(parts).decode("utf-8", "ignore")
+
+
+def _cdp_navigate(profile_dir, url: str,
+                  timeout: float = CDP_TIMEOUT_SECONDS) -> tuple[bool, str]:
+    """Return (ok, info). ok is False only if Chromium could not be controlled.
+
+    A page that fails to load (DNS, offline) still yields ok=True with the
+    network error in info: Chromium shows its error page until the next switch.
+    """
+    port = _devtools_port(profile_dir)
+    if not port:
+        return False, "DevToolsActivePort fehlt"
+    deadline = time.monotonic() + timeout
+    try:
+        path = _cdp_page_ws_path(port, timeout)
+        if not path:
+            return False, "kein Seiten-Ziel gefunden"
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout) as sock:
+            ws = _WebSocket(sock)
+            ws.handshake(port, path)
+            ws.send_text(json.dumps({"id": 1, "method": "Page.navigate",
+                                     "params": {"url": url}}))
+            while time.monotonic() < deadline:
+                msg = json.loads(ws.recv_text())
+                if not isinstance(msg, dict) or msg.get("id") != 1:
+                    continue
+                if "error" in msg:
+                    err = msg.get("error") or {}
+                    return False, f"CDP: {err.get('message') or err}"
+                result = msg.get("result") or {}
+                return True, str(result.get("errorText") or "")
+            return False, "CDP-Timeout"
+    except Exception as e:
+        return False, f"CDP: {e or type(e).__name__}"
+
+
 class KioskManager:
     HOTPLUG_STABLE_SECONDS = 4.0
     DISPLAY_WAIT_SECONDS = 10.0
     WATCH_INTERVAL_SECONDS = 2.0
     VISIBILITY_CHECK_SECONDS = 15.0
+    PLAYLIST_RETRY_SECONDS = 2.0
 
     def __init__(self):
         self.processes = {}     # idx -> Popen
         self.process_outputs = {}  # idx -> xrandr output name
         self.window_health = {}  # idx -> last known window visibility
         self.reload_threads = {}  # idx -> (thread, stop_event)
+        self.playlist_threads = {}  # idx -> (thread, stop_event)
+        self.playlist_state = {}  # idx -> current position for status()
+        # Survives fallback restarts so an ongoing outage is logged only once.
+        self.playlist_cdp_failing = set()
         self.launch_signatures = {}  # idx -> Startparameter des Chromium
         self.rotated_outputs = set()  # von uns gedrehte xrandr-Ausgaenge
         self.unclutter_proc = None
@@ -2674,6 +2888,8 @@ class KioskManager:
             str(screen.get("resolution") or ""),
             int(screen.get("reload_interval", 0) or 0),
             tuple(normalize_chromium_flags(flags)),
+            tuple((item["url"], item["duration"])
+                  for item in active_playlist(screen)),
         )
 
     def _active_monitors(self, monitors: list) -> list:
@@ -3034,6 +3250,124 @@ class KioskManager:
         if entry:
             entry[1].set()
 
+    def _set_playlist_state(self, idx: int, stop: threading.Event,
+                            items: list, pos: int, error: str = "") -> None:
+        with self.lock:
+            entry = self.playlist_threads.get(idx)
+            if entry is None or entry[1] is not stop:
+                return  # superseded by a newer thread
+            self.playlist_state[idx] = {
+                "index": pos,
+                "count": len(items),
+                "url": items[pos]["url"],
+                "next_switch_at": time.time() + items[pos]["duration"],
+                "error": error,
+            }
+
+    def _start_playlist_thread(self, idx: int, items: list, start: int,
+                               profile_dir: str) -> None:
+        self._stop_playlist_thread(idx)
+        if len(items) < 2:
+            with self.lock:
+                self.playlist_cdp_failing.discard(idx)
+            return
+        stop = threading.Event()
+
+        def loop():
+            pos = start
+            last_problem = ""
+            # Load errors are logged on change only to keep the 24/7 log small.
+            page_errors = {}
+            while not stop.wait(items[pos]["duration"]):
+                nxt = (pos + 1) % len(items)
+                url = items[nxt]["url"]
+                try:
+                    ok, info = _cdp_navigate(profile_dir, url)
+                    if not ok and not stop.wait(self.PLAYLIST_RETRY_SECONDS):
+                        ok, info = _cdp_navigate(profile_dir, url)
+                    if stop.is_set():
+                        return
+                    if not ok:
+                        self._set_playlist_state(idx, stop, items, pos, info)
+                        if self._playlist_fallback_restart(idx, stop, nxt, info):
+                            return  # start_screen() replaced this thread
+                        continue
+                    with self.lock:
+                        recovered = idx in self.playlist_cdp_failing
+                        self.playlist_cdp_failing.discard(idx)
+                    if recovered:
+                        log(f"Playlist Bildschirm {idx}: Seitenwechsel per "
+                            "DevTools funktioniert wieder")
+                    pos = nxt
+                    if info != page_errors.get(pos, ""):
+                        if info:
+                            log(f"Playlist Bildschirm {idx}: Seite {pos + 1} "
+                                f"nicht erreichbar ({url}: {info})")
+                        else:
+                            log(f"Playlist Bildschirm {idx}: Seite {pos + 1} "
+                                "wieder erreichbar")
+                    page_errors[pos] = info
+                    last_problem = ""
+                    self._set_playlist_state(idx, stop, items, pos, info)
+                except Exception as e:
+                    # Never let an unexpected error end the rotation.
+                    problem = f"Fehler: {e}"
+                    if problem != last_problem:
+                        log(f"Playlist Bildschirm {idx}: {problem}")
+                    last_problem = problem
+                    pos = nxt
+
+        t = threading.Thread(target=loop, daemon=True)
+        with self.lock:
+            self.playlist_threads[idx] = (t, stop)
+        self._set_playlist_state(idx, stop, items, start)
+        t.start()
+
+    def _stop_playlist_thread(self, idx: int) -> None:
+        with self.lock:
+            entry = self.playlist_threads.pop(idx, None)
+            self.playlist_state.pop(idx, None)
+        if entry:
+            entry[1].set()
+
+    def _playlist_fallback_restart(self, idx: int, stop: threading.Event,
+                                   start: int, reason: str) -> bool:
+        """Restart the screen at page `start` when Chromium cannot be
+        controlled (crashed or hung). Returns False if no restart is possible
+        right now; the caller then keeps rotating and retries later."""
+        with self.apply_lock:
+            if stop.is_set():
+                return True  # stopped or restarted meanwhile
+            with self.lock:
+                desired = self._desired_running
+                first_failure = idx not in self.playlist_cdp_failing
+                self.playlist_cdp_failing.add(idx)
+            if first_failure:
+                log(f"Playlist Bildschirm {idx}: Seitenwechsel per DevTools "
+                    f"fehlgeschlagen ({reason})")
+            if not desired:
+                return False
+            cfg = load_config()
+            if not 0 <= idx < len(cfg["screens"]):
+                return False
+            screen = cfg["screens"][idx]
+            items = active_playlist(screen)
+            if not screen.get("enabled", True) or len(items) < 2:
+                return False
+            monitors = detect_monitors()
+            if not monitor_query_succeeded():
+                return False
+            monitor = self._assign_screens(cfg, monitors).get(idx)
+            if monitor is None:
+                return False
+            if first_failure:
+                log(f"Playlist Bildschirm {idx}: Chromium wird mit Seite "
+                    f"{start % len(items) + 1} neu gestartet (Notloesung)")
+            self.start_screen(idx, screen, monitor,
+                              cfg.get("chromium_flags", []),
+                              playlist_start=start % len(items))
+            return True
+
     def _screen_window_ids(self, idx: int, env: dict | None = None) -> list[str]:
         if not shutil.which("xdotool"):
             return []
@@ -3216,7 +3550,8 @@ class KioskManager:
         pid = process.pid if process is not None else 0
         return self._position_screen_window(idx, pid, monitor)
 
-    def start_screen(self, idx: int, screen: dict, monitor: dict, flags: list):
+    def start_screen(self, idx: int, screen: dict, monitor: dict, flags: list,
+                     playlist_start: int = 0):
         self.stop_screen(idx)
         if not screen.get("enabled", True):
             return
@@ -3268,19 +3603,36 @@ class KioskManager:
                 if rotated is not None:
                     monitor = rotated
 
+        playlist = active_playlist(screen)
+        if not (isinstance(playlist_start, int)
+                and 0 <= playlist_start < len(playlist)):
+            playlist_start = 0
+        start_url = playlist[playlist_start]["url"] if playlist else screen["url"]
+        profile_dir = self._profile_dir(idx)
         cmd = [
             self._chromium_bin(),
             "--kiosk",
             "--new-window",
-            f"--user-data-dir={self._profile_dir(idx)}",
+            f"--user-data-dir={profile_dir}",
             f"--window-position={monitor['x']},{monitor['y']}",
             f"--window-size={monitor['width']},{monitor['height']}",
-            f"--app={screen['url']}",
+            f"--app={start_url}",
             f"--force-device-scale-factor={screen.get('zoom', 1.0)}",
         ]
         cmd.extend(normalize_chromium_flags(flags))
+        if len(playlist) >= 2:
+            # A stale port file could point to an unrelated process.
+            try:
+                (Path(profile_dir) / DEVTOOLS_PORT_FILE).unlink(missing_ok=True)
+            except OSError as e:
+                log(f"DevToolsActivePort Bildschirm {idx} nicht loeschbar: {e}")
+            # Chromium honours the last occurrence of a repeated switch.
+            cmd.append("--remote-debugging-port=0")
 
-        log(f"Starte Bildschirm {idx} ({screen.get('name')}) auf {monitor['name']}: {screen['url']}")
+        suffix = (f" (Playlist Seite {playlist_start + 1}/{len(playlist)})"
+                  if len(playlist) >= 2 else "")
+        log(f"Starte Bildschirm {idx} ({screen.get('name')}) auf "
+            f"{monitor['name']}: {start_url}{suffix}")
         try:
             p = subprocess.Popen(cmd, env=self._env(),
                                  stdout=subprocess.DEVNULL,
@@ -3291,6 +3643,7 @@ class KioskManager:
                 self.launch_signatures[idx] = self._launch_signature(
                     screen, flags)
             self._start_reload_thread(idx, int(screen.get("reload_interval", 0) or 0), p.pid)
+            self._start_playlist_thread(idx, playlist, playlist_start, profile_dir)
             self._position_screen_window(idx, p.pid, monitor)
         except FileNotFoundError:
             log("Chromium nicht gefunden – sudo apt install chromium-browser")
@@ -3302,6 +3655,7 @@ class KioskManager:
 
     def stop_screen(self, idx: int):
         self._stop_reload_thread(idx)
+        self._stop_playlist_thread(idx)
         with self.lock:
             p = self.processes.pop(idx, None)
             self.process_outputs.pop(idx, None)
@@ -3328,6 +3682,7 @@ class KioskManager:
                     set(self.processes)
                     | set(self.process_outputs)
                     | set(self.reload_threads)
+                    | set(self.playlist_threads)
                 )
             for profile_dir in BASE_DIR.glob("chromium-profile-*"):
                 suffix = profile_dir.name.removeprefix("chromium-profile-")
@@ -3645,6 +4000,8 @@ class KioskManager:
             processes = list(self.processes.items())
             outputs = dict(self.process_outputs)
             health = dict(self.window_health)
+            playlists = {idx: dict(st) for idx, st in self.playlist_state.items()}
+        now = time.time()
         for idx, p in processes:
             running = self._screen_process_running(idx, p)
             screen_health = health.get(idx, {})
@@ -3654,6 +4011,15 @@ class KioskManager:
                 "output": outputs.get(idx, ""),
                 "window_visible": screen_health.get("visible"),
             }
+            pl = playlists.get(idx)
+            if pl:
+                out[str(idx)]["playlist"] = {
+                    "index": pl["index"],
+                    "count": pl["count"],
+                    "url": pl["url"],
+                    "seconds_left": max(0, int(round(pl["next_switch_at"] - now))),
+                    "error": pl["error"],
+                }
         return out
 
     def _watch_tick(self, cfg: dict | None = None,
