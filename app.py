@@ -1256,15 +1256,62 @@ def _xset_blanking_state() -> dict:
     }
 
 
+# lxsession ignores the system-wide autostart once the user file exists, so a
+# new user file starts as a copy of it to keep the panel and desktop starting.
+X11_BLANKING_LINES = ("@xset s off", "@xset -dpms", "@xset s noblank")
+LXDE_SYSTEM_AUTOSTART = Path("/etc/xdg/lxsession/LXDE-pi/autostart")
+
+
+def _lxde_autostart_path() -> Path:
+    return Path(os.path.expanduser("~")) / ".config" / "lxsession" / "LXDE-pi" / "autostart"
+
+
+def _x11_blanking_persistent_state() -> dict:
+    path = _lxde_autostart_path()
+    if not path.exists():
+        return {"configured": False, "file": str(path), "missing": list(X11_BLANKING_LINES)}
+    try:
+        lines = {l.strip() for l in path.read_text(encoding="utf-8", errors="ignore").splitlines()}
+    except Exception as e:
+        return {"configured": False, "file": str(path), "error": str(e),
+                "missing": list(X11_BLANKING_LINES)}
+    missing = [l for l in X11_BLANKING_LINES if l not in lines]
+    return {"configured": not missing, "file": str(path), "missing": missing}
+
+
+def _ensure_x11_blanking_persistent() -> dict:
+    path = _lxde_autostart_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        elif LXDE_SYSTEM_AUTOSTART.exists():
+            text = LXDE_SYSTEM_AUTOSTART.read_text(encoding="utf-8", errors="ignore")
+        else:
+            text = ""
+        present = {l.strip() for l in text.splitlines()}
+        missing = [l for l in X11_BLANKING_LINES if l not in present]
+        if missing or not path.exists():
+            if text and not text.endswith("\n"):
+                text += "\n"
+            text += "".join(l + "\n" for l in missing)
+            path.write_text(text, encoding="utf-8")
+        return {"ok": True, "file": str(path), "added": missing}
+    except Exception as e:
+        return {"ok": False, "file": str(path), "error": str(e)}
+
+
 def power_status() -> dict:
     """Aggregierter Energie-Status fuer das Dashboard."""
     wifi = _wifi_powersave_state()
     wifi_persistent = _nm_powersave_config()
-    blanking = _xset_blanking_state()
+    blanking = {**_xset_blanking_state(),
+                "persistent": _x11_blanking_persistent_state()}
 
     # Gesamtbewertung
     wifi_ok = (wifi.get("state") == "off") and wifi_persistent.get("disabled", False)
-    blanking_ok = blanking.get("available") and blanking.get("blanking_off", False)
+    blanking_ok = (blanking.get("available") and blanking.get("blanking_off", False)
+                   and blanking["persistent"].get("configured", False))
     overall = "ok" if (wifi_ok and blanking_ok) else "warn"
     # Wenn eine Komponente gar nicht verfuegbar ist (z.B. iw fehlt) -> idle
     if (not wifi.get("available")) and (not blanking.get("available")):
@@ -1307,6 +1354,17 @@ def _force_disable_power_save() -> dict:
     else:
         results["steps"].append({"step": "xset", "ok": False,
                                  "msg": "xset nicht installiert"})
+
+    # Also written under Wayland so the settings apply right after switching
+    # to X11.
+    persist = _ensure_x11_blanking_persistent()
+    results["steps"].append({
+        "step": f"autostart {persist['file']}",
+        "ok": persist["ok"],
+        "msg": persist.get("error") or (
+            ("hinzugefuegt: " + ", ".join(persist["added"])) if persist["added"]
+            else "bereits vorhanden"),
+    })
 
     # 2) Live: WLAN-Powersave via NetworkManager auf aktive Verbindung
     if shutil.which("nmcli"):

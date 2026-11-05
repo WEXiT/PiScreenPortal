@@ -1799,18 +1799,25 @@ function renderPower(d, list, badge) {
   const sb = d.screen_blanking || {};
   {
     const row = document.createElement("div");
+    const persistent = !!(sb.persistent && sb.persistent.configured);
     let cls, state;
     if (!sb.available) {
       cls = "idle";
       state = translateBackendReason(sb.reason) || t("svc.missing");
-    } else if (sb.blanking_off) {
+    } else if (sb.blanking_off && persistent) {
       cls = "ok"; state = t("power.state_ok");
+    } else if (sb.blanking_off) {
+      cls = "warn"; state = t("power.live_only");
     } else {
       cls = "warn"; state = t("power.state_warn");
     }
-    const note = sb.available
-      ? `${t("power.screensaver")}: <b>${sb.screensaver_timeout === 0 ? t("power.off") : (sb.screensaver_timeout + "s")}</b> &middot; DPMS: <b>${sb.dpms_enabled ? t("power.on") : t("power.off")}</b>`
-      : escape(translateBackendReason(sb.reason) || "-");
+    const persistNote = `${t("power.persistent")}: <b>${persistent ? t("power.off") : t("power.on")}</b>`;
+    let note = sb.available
+      ? `${t("power.screensaver")}: <b>${sb.screensaver_timeout === 0 ? t("power.off") : (sb.screensaver_timeout + "s")}</b> &middot; DPMS: <b>${sb.dpms_enabled ? t("power.on") : t("power.off")}</b> &middot; ${persistNote}`
+      : `${escape(translateBackendReason(sb.reason) || "-")} &middot; ${persistNote}`;
+    if (d.session === "wayland") {
+      note += `<br>${escape(t("power.wayland_hint"))}`;
+    }
     row.className = "svc " + cls;
     row.innerHTML = `
       <span class="svc-dot"></span>

@@ -378,3 +378,74 @@ class HttpTests(TempConfigMixin, unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class X11BlankingPersistenceTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        base = Path(self.tmp.name)
+        self.autostart = base / "home" / ".config" / "lxsession" / "LXDE-pi" / "autostart"
+        self.system = base / "etc" / "autostart"
+        for target, value in (("_lxde_autostart_path", lambda: self.autostart),
+                              ("LXDE_SYSTEM_AUTOSTART", self.system)):
+            patcher = patch.object(app_module, target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_creates_missing_file_from_system_autostart(self):
+        self.system.parent.mkdir(parents=True)
+        self.system.write_text("@lxpanel --profile LXDE-pi\n@pcmanfm --desktop --profile LXDE-pi",
+                               encoding="utf-8")
+
+        result = app_module._ensure_x11_blanking_persistent()
+
+        self.assertTrue(result["ok"])
+        lines = self.autostart.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines[:2], ["@lxpanel --profile LXDE-pi",
+                                     "@pcmanfm --desktop --profile LXDE-pi"])
+        self.assertEqual(lines[2:], list(app_module.X11_BLANKING_LINES))
+        self.assertTrue(app_module._x11_blanking_persistent_state()["configured"])
+
+    def test_creates_file_without_system_autostart(self):
+        result = app_module._ensure_x11_blanking_persistent()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(self.autostart.read_text(encoding="utf-8").splitlines(),
+                         list(app_module.X11_BLANKING_LINES))
+
+    def test_is_idempotent_and_adds_only_missing_lines(self):
+        self.autostart.parent.mkdir(parents=True)
+        # A commented-out line containing the text must not count as present.
+        self.autostart.write_text("# xset s off disabled\n@xset -dpms\n", encoding="utf-8")
+        self.assertEqual(app_module._x11_blanking_persistent_state()["missing"],
+                         ["@xset s off", "@xset s noblank"])
+
+        first = app_module._ensure_x11_blanking_persistent()
+        second = app_module._ensure_x11_blanking_persistent()
+
+        self.assertEqual(first["added"], ["@xset s off", "@xset s noblank"])
+        self.assertEqual(second["added"], [])
+        lines = self.autostart.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines.count("@xset -dpms"), 1)
+        self.assertEqual(lines.count("@xset s off"), 1)
+
+    def test_force_disable_persists_even_without_xset(self):
+        with patch.object(app_module.shutil, "which", return_value=None):
+            result = app_module._force_disable_power_save()
+
+        step = next(s for s in result["steps"] if s["step"].startswith("autostart"))
+        self.assertTrue(step["ok"])
+        self.assertTrue(result["status"]["screen_blanking"]["persistent"]["configured"])
+
+    def test_power_status_requires_persistent_blanking(self):
+        live_ok = {"available": True, "screensaver_timeout": 0,
+                   "dpms_enabled": False, "blanking_off": True}
+        with patch.object(app_module, "_xset_blanking_state", return_value=live_ok), \
+             patch.object(app_module, "_wifi_powersave_state",
+                          return_value={"available": True, "state": "off"}), \
+             patch.object(app_module, "_nm_powersave_config",
+                          return_value={"disabled": True}):
+            self.assertEqual(app_module.power_status()["overall"], "warn")
+            app_module._ensure_x11_blanking_persistent()
+            self.assertEqual(app_module.power_status()["overall"], "ok")

@@ -287,15 +287,26 @@ if systemctl is-active --quiet NetworkManager; then
 fi
 
 echo ">>> 24/7 mode: permanently disabling screensaver / DPMS (X11 LXDE autostart)"
+# Written even when Wayland is the active session (Pi OS default on Pi 4/5),
+# so the settings apply as soon as the system is switched to X11.
+# lxsession ignores the system-wide autostart once a user file exists, so a
+# new user file starts as a copy of it (panel/desktop keep starting).
 AUTOSTART_DIR="$USER_HOME/.config/lxsession/LXDE-pi"
 AUTOSTART="$AUTOSTART_DIR/autostart"
-if [ -d "$AUTOSTART_DIR" ] && [ -f "$AUTOSTART" ]; then
-    if ! grep -q "xset s off" "$AUTOSTART"; then
-        echo "@xset s off"     | sudo -u "$USER_NAME" tee -a "$AUTOSTART" >/dev/null
-        echo "@xset -dpms"     | sudo -u "$USER_NAME" tee -a "$AUTOSTART" >/dev/null
-        echo "@xset s noblank" | sudo -u "$USER_NAME" tee -a "$AUTOSTART" >/dev/null
+SYSTEM_AUTOSTART="/etc/xdg/lxsession/LXDE-pi/autostart"
+sudo -u "$USER_NAME" mkdir -p "$AUTOSTART_DIR"
+if [ ! -f "$AUTOSTART" ]; then
+    if [ -f "$SYSTEM_AUTOSTART" ]; then
+        sudo -u "$USER_NAME" cp "$SYSTEM_AUTOSTART" "$AUTOSTART"
+    else
+        sudo -u "$USER_NAME" touch "$AUTOSTART"
     fi
 fi
+for line in "@xset s off" "@xset -dpms" "@xset s noblank"; do
+    if ! grep -qxF "$line" "$AUTOSTART"; then
+        echo "$line" | sudo -u "$USER_NAME" tee -a "$AUTOSTART" >/dev/null
+    fi
+done
 
 # Wayfire (Wayland on Pi OS Bookworm+): set idle timeouts to 0.
 WAYFIRE_INI="$USER_HOME/.config/wayfire.ini"
